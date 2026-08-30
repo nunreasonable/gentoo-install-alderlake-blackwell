@@ -1,0 +1,60 @@
+{
+  "findings": [
+    {
+      "file": "06-users-services.sh",
+      "location": "script inteiro (etapas 06-dhcpcd/06-syslog-cron, linhas 263-299); do_syslog_cron(): `emerge --quiet app-admin/sysklogd sys-process/cronie` — nenhuma sub-etapa emerge sys-fs/dosfstools nem sys-fs/xfsprogs. Fstab correspondente em 03-chroot-setup.sh linha 260: `printf 'UUID=%s\\t/efi\\tvfat\\tumask=0077\\t0 2\\n' \"$efi_uuid\"`",
+      "severity": "high",
+      "title": "Handbook 'Installing system tools > Filesystem tools' pulado: falta sys-fs/dosfstools (ESP vfat) e sys-fs/xfsprogs (ROOT_FS=xfs)",
+      "detail": "O Handbook atual tem a secao 'Filesystem tools' que manda instalar as ferramentas de userspace de cada filesystem usado: sys-fs/dosfstools para VFAT (a ESP) e sys-fs/xfsprogs para XFS; so o e2fsprogs (ext4) ja vem no @system do stage3. Nenhum script emerge esses pacotes. Consequencia real: o fstab gerado pelo 03 poe a ESP com passno 2 (`UUID=... /efi vfat umask=0077 0 2`), entao no primeiro boot o servico fsck do OpenRC roda `fsck -A`, que tenta executar fsck.vfat — inexistente sem dosfstools. O fsck retorna erro operacional, o servico fsck falha e o localmount (que tem `need fsck`) nao sobe: /efi nao monta e o boot fica degradado. Com ROOT_FS=xfs e pior: a raiz tem passno 1 e nem fsck.xfs (stub do xfsprogs) nem xfs_repair existem no sistema instalado — o proprio plano do projeto nota que o Handbook recomenda xfs, entao esse caminho e plenamente esperado.",
+      "fix": "Adicionar uma sub-etapa 06-fs-tools (ou incluir na 06-syslog-cron, mas para os dois inits — a secao vale tambem para systemd): sempre `emerge --quiet sys-fs/dosfstools` (a ESP e sempre vfat neste layout) e, quando `blkid -s TYPE -o value $ROOT_PART` == xfs (ou ROOT_FS=xfs), tambem `emerge --quiet sys-fs/xfsprogs`. Probe via pkg_installed sys-fs/dosfstools (+ sys-fs/xfsprogs condicional). Rodar fora do bloco `if INIT_SYSTEM == openrc` — systemd tambem precisa."
+    },
+    {
+      "file": "06-users-services.sh",
+      "location": "etapa 06-hostname (linhas 72-98) e restante do script — nenhum passo escreve /etc/hosts (grep por 'etc/hosts' no repo inteiro: zero ocorrencias). do_hostname(): `cat > /etc/conf.d/hostname <<EOF ... hostname=\"$TARGET_HOSTNAME\"`",
+      "severity": "medium",
+      "title": "Handbook 'The hosts file' pulado — obrigatorio no OpenRC ('the hostname chosen above must be configured in /etc/hosts')",
+      "detail": "O Handbook atual (Configuring the system > Networking) diz textualmente que em sistemas OpenRC o hostname escolhido DEVE ser configurado em /etc/hosts (ex.: `127.0.0.1 tux.homenetwork tux localhost`). Nenhum script toca /etc/hosts; o arquivo fica o default do stage3, que nao contem o hostname da maquina. Na pratica, no sistema instalado (INIT_SYSTEM=openrc e o default do vars.sh) o proprio hostname nao resolve via nsswitch 'files': `hostname -f` falha, sudo (quando instalado) imprime 'unable to resolve host', e daemons que fazem lookup reverso do proprio nome (sshd, MTAs, syslog remoto) sofrem timeouts/avisos a cada conexao.",
+      "fix": "Na etapa 06-hostname (ou nova sub-etapa 06-hosts), garantir uma linha `127.0.0.1\\t$TARGET_HOSTNAME localhost` (idempotente: sed na linha 127.0.0.1 existente ou append se ausente) em /etc/hosts, com probe `grep -qw \"$TARGET_HOSTNAME\" /etc/hosts`. Aplicar pelo menos no branch OpenRC (no systemd o Handbook nao exige, mas e inofensivo)."
+    },
+    {
+      "file": "06-users-services.sh",
+      "location": "bloco systemd, linhas 172-177: `run_step 06-machine-id probe_machine_id do_machine_id` / `run_step 06-firstboot probe_firstboot do_firstboot` — nao existe chamada a systemctl preset-all em nenhum script (grep por 'preset': zero ocorrencias)",
+      "severity": "medium",
+      "title": "Handbook (systemd): falta `systemctl preset-all --preset-mode=enable-only` apos machine-id/firstboot",
+      "detail": "A secao 'Init and boot configuration > systemd' do Handbook atual manda rodar, alem de systemd-machine-id-setup e systemd-firstboot, o comando `systemctl preset-all --preset-mode=enable-only` — 'to ensure a smooth transition from the live environment to the installation's first boot'. Com INIT_SYSTEM=systemd os scripts pulam esse passo: unidades que o preset do Gentoo habilita por padrao (ex.: systemd-timesyncd, remote-fs.target e outras enabled via /usr/lib/systemd/system-preset) ficam desabilitadas no primeiro boot, resultando num sistema systemd sem relogio sincronizado e sem os defaults esperados da distro.",
+      "fix": "Adicionar no bloco systemd uma sub-etapa 06-preset com do_fn `systemctl preset-all --preset-mode=enable-only` (exatamente esse modo — o preset-all completo poderia desfazer os `systemctl enable` de sshd/dhcpcd feitos em 06-services; enable-only nunca desabilita nada, entao a ordem relativa a 06-services e indiferente). Probe simples: marker (nao ha estado funcional barato para inspecionar) ou verificar `systemctl is-enabled systemd-timesyncd`."
+    },
+    {
+      "file": "06-users-services.sh",
+      "location": "do_hostname(), linhas 84-96: branch openrc escreve `/etc/conf.d/hostname` com `hostname=\"$TARGET_HOSTNAME\"`; so o branch systemd faz `printf '%s\\n' \"$TARGET_HOSTNAME\" > /etc/hostname`",
+      "severity": "low",
+      "title": "Hostname via /etc/conf.d/hostname e o metodo que o Handbook ja abandonou — o atual usa /etc/hostname para os dois inits",
+      "detail": "O Handbook atual configura o hostname com `echo tux > /etc/hostname` para OpenRC e systemd (o init script hostname do OpenRC >=0.44 le /etc/hostname, e esse arquivo tem PRECEDENCIA sobre a variavel de /etc/conf.d/hostname quando existe). O metodo conf.d ainda funciona no stage3 atual (que nao traz /etc/hostname), mas e o jeito antigo: se qualquer coisa criar um /etc/hostname (ex.: usuario seguindo o Handbook, ou mudanca futura do stage3), o valor de conf.d passa a ser silenciosamente ignorado e a maquina volta a chamar-se 'localhost'.",
+      "fix": "No branch OpenRC de do_hostname/probe_hostname, escrever tambem (ou apenas) `/etc/hostname` com $TARGET_HOSTNAME, como o Handbook atual — o probe passa a checar `[[ \"$(cat /etc/hostname)\" == \"$TARGET_HOSTNAME\" ]]` nos dois inits, unificando o codigo."
+    },
+    {
+      "file": "03-chroot-setup.sh",
+      "location": "do_sync(), linhas 117-122: `emerge-webrsync` / `emerge --sync --quiet` — nenhuma chamada a `eselect news` em script algum (grep: zero ocorrencias)",
+      "severity": "low",
+      "title": "Etapa 'Reading news items' do Handbook pulada apos o sync",
+      "detail": "O Handbook, logo apos a sincronizacao do repositorio, tem a etapa de ler os news items (`eselect news list` / `eselect news read`), que frequentemente contem instrucoes de migracao obrigatorias (ex.: mudancas de perfil 23.0, merged-usr) relevantes exatamente durante uma instalacao. Os scripts nunca listam nem marcam os news; o aviso 'Use eselect news read to view new items' fica soterrado no log do tee e o usuario de uma instalacao automatizada nunca ve avisos que podem afetar as etapas seguintes (perfil, world update).",
+      "fix": "Apos do_sync (fora de run_step, sempre): `eselect news list` ecoado no log e, para nao poluir emerges futuros, `eselect news read all` (ou ao menos logar com log_warn que ha N news nao lidos, extraindo a contagem de `eselect news count new`)."
+    },
+    {
+      "file": "01-stage3.sh",
+      "location": "script inteiro — as sub-etapas comecam direto em `run_step 01-gpg-key probe_gpg_key do_gpg_key` (linha 301); nao ha checagem de data/hora antes dos downloads/verificacoes",
+      "severity": "low",
+      "title": "Handbook 'Setting the date and time' pulado antes do download/verificacao do stage3",
+      "detail": "O Handbook, antes de baixar o stage3, manda conferir/acertar o relogio do sistema (via chronyd/ntpd ou `date`), avisando que um relogio muito errado quebra a validacao de certificados TLS e pode invalidar verificacao de assinaturas. Num desktop novo ou com bateria CMOS fraca (cenario bare metal real deste projeto), o live ISO pode subir com data absurda: o `fetch` via https falha com erro criptico de certificado, ou o gpg considera a chave releng fora da validade — e o script morre sem apontar a causa raiz.",
+      "fix": "No inicio de 01-stage3.sh (antes de run_step 01-gpg-key), adicionar um sanity check barato: se `date +%s` for anterior a uma data de referencia embutida (ex.: a data de geracao dos scripts) por mais que alguns dias, die com mensagem mandando acertar o relogio (`chronyd -q` ou `date -s`, como no Handbook) — ou tentar sincronizar automaticamente quando `chronyd`/`ntpd` existir na midia."
+    },
+    {
+      "file": "01-stage3.sh",
+      "location": "linha 34: `WORKDIR=\"$TARGET_ROOT/var/tmp/gentoo-install/stage3\"` — nada remove o tarball depois do 01-extract (nem o install.sh em print_final_instructions)",
+      "severity": "low",
+      "title": "Etapa do Handbook 'Removing tarballs' (Finalizing) pulada — stage3 (~300MB) fica para sempre em /var/tmp do sistema instalado",
+      "detail": "O Handbook (Finalizing) manda remover o tarball do stage3 baixado antes do reboot. Como o WORKDIR fica dentro do filesystem alvo (decisao correta para sobreviver a reboot do live ISO), o sistema instalado herda /var/tmp/gentoo-install/stage3 com o tarball .tar.xz (~280-320MB), .asc, .sha256 e o keyring GNUPGHOME — lixo permanente que nenhuma etapa nem as instrucoes finais mencionam. Remover cedo demais quebraria a idempotencia (o probe 01-verify referencia o tarball), entao o lugar certo e o encerramento.",
+      "fix": "Em print_final_instructions do install.sh (ou num passo final da fase chroot), incluir/executar a limpeza: `rm -rf /var/tmp/gentoo-install/stage3` apos a fase chroot concluir com sucesso — ou ao menos imprimir a instrucao de remocao junto com o umount/reboot, citando o caminho exato."
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "findings": [
+    {
+      "file": "00-partition.sh",
+      "location": "do_gpt (linhas 113-118: `sgdisk --zap-all \"$TARGET_DISK\"` + `sgdisk -n ...`) em conjunto com probe_mkfs_root linha 161: `[[ \"$(_fs_type \"$ROOT_PART\")\" == \"$ROOT_FS\" ]]` (e probes analogos probe_mkfs_efi/probe_mkfs_swap)",
+      "severity": "high",
+      "title": "--reset --repartition nunca reformata: sgdisk --zap-all nao apaga assinaturas de filesystem e os probes de mkfs pulam o mkfs",
+      "detail": "O contrato entre arquivos e: install.sh --repartition renomeia o PARTLABEL da particao 3, o probe_gpt do 00 reprova, do_gpt re-exige ERASE e reparticiona, e dai o disco e 'reformatado' (README linha 78: 're-exige a confirmacao ERASE <disco> e reparticiona/reformata. Necessario para trocar INIT_SYSTEM no meio'; 01-stage3.sh linha 263 manda o usuario rodar './install.sh --reset --repartition (apaga o state e o disco)'). Mas `sgdisk --zap-all` zera apenas as estruturas GPT/MBR, nao os superblocos. Como do_gpt recria as 3 particoes com os MESMOS tamanhos de vars.sh (mesmos offsets), o blkid continua enxergando as assinaturas vfat/swap/ext4 antigas: probe_mkfs_efi/swap/root retornam 0 e os tres mkfs sao PULADOS. Na pratica, ao trocar INIT_SYSTEM (o unico caminho suportado passa por --reset --repartition), o stage3 do novo flavor e extraido POR CIMA da arvore antiga inteira (binarios do systemd sobrando num sistema openrc e vice-versa, /var/db/pkg misturado, configs orfaos) — exatamente o estado 'mixed' que o check_flavor_mismatch do 01 existe para impedir. O disco NAO e apagado, ao contrario do que 01-stage3.sh e o README prometem.",
+      "fix": "Em do_gpt (00-partition.sh), depois do loop que espera os device nodes (linhas 125-130), apagar as assinaturas antigas das tres particoes recem-criadas: `wipefs -a \"$EFI_PART\" \"$SWAP_PART\" \"$ROOT_PART\"`. A destruicao ja foi confirmada por confirm_destruction no inicio de do_gpt, entao e seguro; com as assinaturas apagadas, probe_mkfs_* reprovam e os mkfs rodam de verdade."
+    },
+    {
+      "file": "01-stage3.sh",
+      "location": "probe_extract linha 283: `[[ \"$(step_value 01-extract)\" == \"$INIT_SYSTEM\" ]] || return 1` e check_flavor_mismatch linhas 261-263: `marked=\"$(step_value 01-extract)\"` / `if [[ -n \"$marked\" && \"$marked\" != \"$INIT_SYSTEM\" ]]`",
+      "severity": "high",
+      "title": "probe_extract depende do marker: um simples --reset re-extrai o stage3 por cima do sistema instalado e desarma a guarda de flavor",
+      "detail": "README (linhas 93-96) e install.sh --help (linhas 66-71) prometem que apos --reset 'o que o estado REAL do sistema mostra como feito continua sendo pulado' / '--reset e barato e seguro: apaga so os markers; o que ja esta certo continua sendo detectado como certo pelos probes'. Mas probe_extract exige que o MARKER 01-extract contenha o flavor: com o state dir apagado, step_value retorna vazio, o probe reprova mesmo com /etc/gentoo-release presente, e do_extract roda `tar xpf` do stage3 POR CIMA de um sistema possivelmente ja instalado por completo — sobrescrevendo /etc/passwd e /etc/shadow (usuario do 06 some, senha de root volta a bloqueada), /etc/fstab, /etc/conf.d/*, e re-gravando entradas de /var/db/pkg com as versoes do stage3 (se UPDATE_WORLD atualizou pacotes, o VDB fica com versoes duplicadas/corrompidas). Pior: check_flavor_mismatch tambem le o mesmo marker apagado (marked vazio => nenhuma checagem), entao trocar INIT_SYSTEM + `--reset` simples passa em silencio e extrai o flavor novo por cima da arvore antiga — contradizendo o proprio cabecalho do 01 ('Trocar INIT_SYSTEM depois do extract e fatal') e o README linha 101-103, que dizem que o 01 detecta o mismatch.",
+      "fix": "Tornar probe_extract funcional: alem de `[[ -e $TARGET_ROOT/etc/gentoo-release ]]`, detectar o flavor pela propria arvore (mesma logica ja existente em check_flavor_mismatch: `[[ -x $TARGET_ROOT/lib/systemd/systemd ]] => systemd, senao openrc`) e comparar com $INIT_SYSTEM; usar o marker apenas como registro. Em check_flavor_mismatch, quando o marker estiver vazio mas /etc/gentoo-release existir, cair na mesma deteccao funcional e morrer no mismatch — assim a guarda sobrevive ao --reset."
+    },
+    {
+      "file": "04-kernel.sh",
+      "location": "probe_kernel_build linha 206: `[[ -n \"$(fragment_hash)\" && \"$(step_value 04-kernel-build)\" == \"$(fragment_hash)\" ]] || return 1`",
+      "severity": "medium",
+      "title": "probe_kernel_build depende do marker: --reset forca rebuild completo do kernel (horas), contradizendo o README e o proprio --help",
+      "detail": "Mesmo padrao do achado do 01, com dano menor: o probe exige que o marker 04-kernel-build contenha o sha256 do fragmento. Apos `./install.sh --reset`, o marker some e o probe reprova mesmo com vmlinuz + /lib/modules/<kver> perfeitamente atuais — resultado: recompilacao integral do kernel (horas num alvo real). Isso contradiz diretamente o README linhas 93-96 ('--reset e barato e seguro ... so o que diverge e refeito') e a frase do --help do install.sh 'o que o estado REAL do sistema mostra como feito continua sendo pulado'. O mesmo --help ate admite o oposto duas linhas antes ('o reset descarta apenas os markers (inclusive os com valor: ... hash do kernel ...)'), ou seja, o texto de ajuda se contradiz internamente e o README documenta um comportamento que nao existe.",
+      "fix": "Persistir o hash do fragmento fora do state dir, num artefato que sobrevive ao --reset e acompanha o build — ex.: do_kernel_build gravar tambem `/boot/gentoo-install-fragment.sha256` junto do vmlinuz, e probe_kernel_build aceitar `step_value 04-kernel-build` OU esse arquivo como fonte do hash. Alternativa minima: corrigir README (linhas 93-96) e o --help do install.sh para avisar explicitamente que --reset re-extrai o stage3 e re-compila o kernel."
+    },
+    {
+      "file": "README.md",
+      "location": "linha 75: \"| `--from N` | Comeca no script `N` e segue ate o fim da fase (ex.: `--from 04` retoma do kernel) |\"",
+      "severity": "low",
+      "title": "README descreve --from como 'segue ate o fim da fase', mas o install.sh segue ate a etapa 06 atravessando as duas fases",
+      "detail": "O --help do install.sh (linha 61-63) diz corretamente 'comeca na etapa N e segue ate a 06', e main_live confirma: com `--from 1` na fase live ele roda 01 e 02 e em seguida chama enter_chroot, executando 03-06 tambem (linhas 461-471 do install.sh). O README afirma que a execucao para no 'fim da fase' — um usuario que rode `--from 1` esperando parar apos o 02 vai, na verdade, entrar no chroot e rodar a instalacao ate o 06.",
+      "fix": "Trocar a celula do README para: 'Comeca no script N e segue ate a 06 (na fase live, apos as etapas live ele entra no chroot e continua; ex.: --from 04 retoma do kernel)'."
+    },
+    {
+      "file": "README.md",
+      "location": "linha 212: \"Se reparticionou apos o 05, rode `./install.sh --only 05` no chroot para regravar o PARTUUID.\"",
+      "severity": "low",
+      "title": "Comando do troubleshooting falha se executado literalmente dentro do chroot: falta --chroot",
+      "detail": "Dentro do chroot a sentinela /etc/gentoo-install/.inside-chroot existe, entao `./install.sh --only 05` (sem --chroot) cai em `require_phase live` (install.sh linhas 199-203) e morre com 'este script deve rodar no live ISO ... sentinela presente'. A forma valida dentro do chroot e `./install.sh --chroot --only 5`; a forma sem --chroot so funciona rodando do live ISO (que entao entra no chroot sozinho). Como o texto diz 'no chroot', o leitor executa exatamente o comando que o parser rejeita.",
+      "fix": "Corrigir a frase para: 'rode `./install.sh --only 05` do live ISO (ele entra no chroot sozinho) ou, ja dentro do chroot, `./install.sh --chroot --only 5`'."
+    },
+    {
+      "file": "00-partition.sh",
+      "location": "linhas 205-208: `run_step \"00-gpt\" probe_gpt do_gpt` ... `run_step \"00-mkfs-root\" probe_mkfs_root do_mkfs_root` (todas ANTES de `run_step \"00-mount\"`), combinado com state_dir de lib.sh linhas 261-267",
+      "severity": "low",
+      "title": "Markers de 00-gpt/00-mkfs-* sao gravados sob $TARGET_ROOT ainda desmontado e ficam sombreados apos o mount",
+      "detail": "state_dir (lib.sh) devolve `$TARGET_ROOT/var/lib/gentoo-install/state` na fase live, com o contrato documentado de que o state 'vive NO FILESYSTEM ALVO (sobrevive as duas fases e a reboot do live ISO)'. Mas na primeira execucao do 00 as sub-etapas 00-gpt e 00-mkfs-* rodam ANTES de 00-mount: mark_done faz `mkdir -p` e grava os markers no tmpfs do live ISO, embaixo do mountpoint vazio /mnt/gentoo. Quando 00-mount monta a raiz real por cima, esses markers ficam invisiveis (e se o live rebootar, somem de vez). Na pratica nao ha dano porque os probes sao a autoridade e o run_step regrava os markers na re-execucao, mas o comportamento contradiz o contrato do state_dir e polui o tmpfs do live com uma arvore var/lib fantasma sob o mountpoint.",
+      "fix": "No final do 00-partition.sh, apos `run_step 00-mount` (com o alvo ja montado), regravar os markers das sub-etapas anteriores no filesystem real: `for s in 00-gpt 00-mkfs-efi 00-mkfs-swap 00-mkfs-root; do step_done \"$s\" || mark_done \"$s\"; done` — ou documentar em lib.sh/state_dir que markers pre-mount do 00 sao descartaveis por design."
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "findings": [
+    {
+      "file": "/home/daeese/gentoo-install/03-chroot-setup.sh",
+      "location": "probe_world_update, linhas 273-278: pending=\"$(emerge --pretend --quiet --update --deep --newuse @world 2>/dev/null | grep -c '^\\[' || true)\"",
+      "severity": "medium",
+      "title": "probe_world_update engole falha do emerge e marca 03-world-update como feito",
+      "detail": "Se `emerge --pretend` falhar (conflito de dependencias, pacote mascarado, arvore corrompida, perfil invalido), o stderr e suprimido por 2>/dev/null e o stdout nao contem linhas '^['; `grep -c` imprime '0' e sai com 1, e o `|| true` mascara tanto o status do grep quanto o do emerge (que o pipefail teria propagado). Resultado: pending='0', o probe retorna 0, run_step grava o marker e loga '[03-world-update] probe OK — ja feito, pulando'. Com UPDATE_WORLD=yes, um erro real do emerge vira silenciosamente 'nada a atualizar' e do_world_update nunca roda — exatamente o padrao de exit code engolido por pipe + || true dentro de probe.",
+      "fix": "Separar o status do emerge da contagem: em probe_world_update, rodar `local out; out=\"$(emerge --pretend --quiet --update --deep --newuse @world 2>&1)\" || return 1` (falha do emerge = nao-feito, forcando do_world_update a rodar e expor o erro real com errexit), e so depois contar: `[[ \"$(grep -c '^\\[' <<<\"$out\" || true)\" -eq 0 ]]`. Nao suprimir o stderr do emerge, ou registra-lo no log."
+    },
+    {
+      "file": "/home/daeese/gentoo-install/00-partition.sh",
+      "location": "do_gpt, linhas 96-106: `umount \"$mnt\"` no loop `while read -r dev mnt; do ... done < <(lsblk -nrpo NAME,MOUNTPOINT \"$TARGET_DISK\" | sort -rk2)`",
+      "severity": "low",
+      "title": "Re-particionamento standalone com alvo montado morre em EBUSY por causa do fd do proprio tee",
+      "detail": "Quando 00-partition.sh roda standalone com $TARGET_ROOT ja montado e o probe_gpt reportando layout invalido (ex.: apos renomear PARTLABEL, o cenario que --repartition cria), init_logging escolhe logdir=$TARGET_ROOT/var/log/gentoo-install e o `exec > >(tee -a \"$LOGFILE\") 2>&1` mantem um fd aberto DENTRO do filesystem alvo. O `umount \"$mnt\"` de /mnt/gentoo entao falha com EBUSY, e como do_gpt roda via run_step em contexto nao-condicional, o set -e mata o script antes do sgdisk (sem perda de dados, mas o caminho documentado de rodar o 00 standalone nunca consegue re-particionar). Alem disso o umount nao e recursivo: se ensure_chroot_mounts tiver deixado proc/sys/dev/run montados sob o alvo (mounts que nao sao particoes de $TARGET_DISK e portanto nao aparecem no lsblk do disco), o umount de $TARGET_ROOT falha por child mounts. install.sh resolve isso no proprio fluxo com detach_logging_to_tmp + `umount -R` com retry (linhas 246-320), mas o 00 nao tem nada equivalente.",
+      "fix": "Mover detach_logging_to_tmp de install.sh para lib.sh e chama-la no inicio de do_gpt (antes do loop de umount); substituir o umount por particao por `mountpoint -q \"$TARGET_ROOT\" && umount -R \"$TARGET_ROOT\"` com retry (mesma logica de repartition_prep), mantendo o swapoff por device como esta."
+    }
+  ]
+}

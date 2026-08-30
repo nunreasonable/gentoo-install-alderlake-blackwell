@@ -1,0 +1,52 @@
+{
+  "findings": [
+    {
+      "file": "00-partition.sh",
+      "location": "do_gpt, linhas 113-130: `sgdisk --zap-all \"$TARGET_DISK\"` ... `command -v udevadm > /dev/null 2>&1 && udevadm settle || true` ... `[[ -b \"$EFI_PART\" && -b \"$SWAP_PART\" && -b \"$ROOT_PART\" ]] && break`",
+      "severity": "high",
+      "title": "do_gpt nao verifica se o kernel releu a tabela nova; nodes stale fazem mkfs/mkswap escreverem nos offsets da tabela ANTIGA",
+      "detail": "sgdisk retorna exit 0 mesmo quando o BLKRRPART falha (imprime apenas 'Warning: The kernel is still using the old partition table'). Isso acontece sempre que alguma particao do disco esta em uso por um holder device-mapper — e live ISOs costumam auto-ativar VGs LVM e as vezes LUKS de instalacoes anteriores presentes no disco alvo. Nesse cenario nada nas guardas pega: validate_vars e _assert_not_mounted_elsewhere so checam MOUNTPOINT e /proc/swaps (um PV LVM ou container LUKS aberto mas nao montado passa limpo), do_gpt so faz swapoff/umount (nao faz vgchange -an nem cryptsetup close). O `udevadm settle` nao forca releitura, e o wait-loop `[[ -b ... ]]` passa IMEDIATAMENTE porque os device nodes ANTIGOS (nvme0n1p1/p2/p3 da tabela anterior) continuam existindo com a geometria antiga. Resultado: mkfs.vfat/mkswap/mkfs.ext4 rodam em particoes cujos limites no kernel sao os do layout anterior — ex.: ESP antiga de 512MiB em outro offset, swap antiga sobrepondo a root nova — ou seja, o mkfs cai efetivamente na particao errada (dentro do disco confirmado, mas corrompendo silenciosamente o layout que acabou de ser criado e qualquer resumo posterior).",
+      "fix": "Em do_gpt: (1) antes do zap, detectar holders ativos das particoes do disco (`ls /sys/class/block/<part>/holders/` nao-vazio, ou `lsblk -nro TYPE \"$TARGET_DISK\"` contendo lvm/crypt/raid*) e morrer com instrucao de `vgchange -an`/`cryptsetup close` (ou desativa-los explicitamente); (2) depois do sgdisk de criacao, forcar e VERIFICAR a releitura: `blockdev --rereadpt \"$TARGET_DISK\"` (ou `partprobe`) tratando falha como fatal, e so prosseguir quando `lsblk -nro PARTLABEL` das 3 particoes reportar gentoo-esp/gentoo-swap/gentoo-root (confirma que o KERNEL enxerga a tabela nova, nao so o disco em si — o probe atual via `sgdisk -i` le do disco e nao detecta a dessincronizacao)."
+    },
+    {
+      "file": "lib.sh",
+      "location": "_live_root_disks, linhas 152-159: `src=\"$(findmnt -rno SOURCE / 2>/dev/null || true)\"` seguido de `[[ -b \"$src\" ]] || return 0`",
+      "severity": "high",
+      "title": "Guarda anti-host morre silenciosamente quando / e btrfs subvolume — confirmado NESTE host: findmnt retorna '/dev/nvme1n1p3[/root]'",
+      "detail": "Para / em subvolume btrfs (default do Fedora — o SO real onde estes scripts residem), `findmnt -rno SOURCE /` devolve o device com sufixo de fsroot: verifiquei neste host que retorna literalmente `/dev/nvme1n1p3[/root]`. Esse string nao e block device, entao `[[ -b \"$src\" ]] || return 0` faz a funcao retornar VAZIO — indistinguivel do caso live-ISO legitimo — e a checagem 'TARGET_DISK sustenta o /' em validate_vars (linha 178) vira no-op silencioso. O mesmo vale para LUKS+btrfs (`/dev/mapper/luks-...[/root]`). Agravante concreto: neste host existe /dev/nvme0n1 (o default de TARGET_DISK em vars.sh!) como disco de dados de 465GB; hoje ele so escapa porque nvme0n1p1 esta montada em /mnt/data e a rede secundaria (mounts fora de TARGET_ROOT) pega — se estiver desmontada, sobra apenas o prompt ERASE entre um engano e o zap do disco de dados do host.",
+      "fix": "Usar `findmnt -v -rno SOURCE /` (-v/--nofsroot suprime o sufixo [/subvol]; verificado neste host que retorna `/dev/nvme1n1p3` limpo) ou, como cinto e suspensorio, strip manual: `src=\"${src%%\\[*}\"` antes do teste `[[ -b ]]`. Adicionalmente, tratar o caso 'src nao-vazio e nao block device apos strip' como suspeito em vez de retornar 0 mudo."
+    },
+    {
+      "file": "lib.sh",
+      "location": "current_phase, linhas 41-47 (`if [[ -e \"$CHROOT_SENTINEL\" ]] ... else echo \"live\"`), combinado com confirm_destruction linhas 376-379 (`if [[ \"$AUTO_CONFIRM\" == \"yes\" ]]; then ... return 0`)",
+      "severity": "medium",
+      "title": "Qualquer host instalado e tratado como fase 'live'; com AUTO_CONFIRM=yes herdado do ambiente o disco e zapado sem NENHUM prompt",
+      "detail": "A fase 'live' e definida por mera ausencia da sentinela de chroot — nao ha nenhuma evidencia positiva de que estamos numa midia live. Rodar ./install.sh no proprio Fedora do usuario passa por require_phase live normalmente, e a protecao vira exclusivamente o validate_vars (cuja checagem primaria esta morta em btrfs, ver finding anterior; a secundaria so protege particoes DO DISCO ALVO que estejam montadas naquele instante). Alem disso vars.sh aceita override por ambiente (`: \"${AUTO_CONFIRM:=no}\"`): um `export AUTO_CONFIRM=yes` esquecido no shell de uma sessao anterior de teste em VM elimina o unico gate interativo restante (ERASE) — o caminho ate `sgdisk --zap-all` num disco do host fica entao 100% silencioso.",
+      "fix": "Na fase live, exigir evidencia positiva de midia live antes de qualquer acao destrutiva: se o SOURCE de / (com `findmnt -v`) FOR um block device, e um sistema instalado — morrer com mensagem clara, com override apenas por variavel explicita e nao-default (ex.: `I_AM_SURE_THIS_IS_NOT_MY_HOST=yes`). No minimo, recusar o bypass de AUTO_CONFIRM=yes quando essa deteccao indicar sistema instalado (bypass so em live/VM), para que ERASE continue obrigatorio no cenario mais perigoso."
+    },
+    {
+      "file": "00-partition.sh",
+      "location": "do_mkfs_root, linhas 164-174 (`mkfs.ext4 -F \"$ROOT_PART\"` / `mkfs.xfs -f \"$ROOT_PART\"`) e wiring em run_step linhas 205-209 — confirm_destruction so e chamada dentro de do_gpt (linha 90)",
+      "severity": "medium",
+      "title": "mkfs/mkswap rodam sem confirmacao nenhuma quando probe_gpt passa mas o filesystem difere (ex.: ROOT_FS mudado, ou instalacao gentoo anterior com dados)",
+      "detail": "confirm_destruction esta ligada exclusivamente a sub-etapa 00-gpt. Se a tabela GPT ja bate (3 particoes com type GUID + PARTLABEL gentoo-esp/swap/root — ex.: disco de uma instalacao anterior feita por estes mesmos scripts, com dados reais na raiz), probe_gpt retorna 0 e nenhum prompt acontece. Se em seguida `blkid -s TYPE` divergir do esperado — caso tipico: usuario troca ROOT_FS=ext4 para xfs em vars.sh e re-executa — probe_mkfs_root falha e do_mkfs_root executa `mkfs.xfs -f` direto, destruindo o filesystem raiz populado sem que 'ERASE <disco>' jamais tenha sido digitado NESTA execucao. O comentario nas linhas 166-168 ('a destruicao do disco foi confirmada na sub-etapa 00-gpt') e falso nesse caminho: o 00-gpt foi PULADO.",
+      "fix": "Nos do_mkfs_* (efi/swap/root), quando a particao ja contem uma assinatura de filesystem (`blkid -s TYPE` nao-vazio) e a sub-etapa 00-gpt NAO executou do_gpt nesta mesma execucao (ex.: setar uma flag global `GPT_RECREATED=yes` em do_gpt), chamar confirm_destruction (uma unica vez, cacheada numa flag de processo) antes do mkfs. Particao recem-criada/sem assinatura segue sem prompt."
+    },
+    {
+      "file": "lib.sh",
+      "location": "validate_vars, linha 185: `[[ -n \"$mnt\" && \"$mnt\" != \"[SWAP]\" ]] || continue` (rede secundaria), combinado com 00-partition.sh do_gpt linhas 99-101 (`if [[ \"$mnt\" == \"[SWAP]\" ]]; then swapoff \"$dev\"`)",
+      "severity": "low",
+      "title": "Swap ativo de terceiros no disco alvo nao bloqueia a validacao e e desativado silenciosamente por do_gpt",
+      "detail": "A rede secundaria de validate_vars morre para qualquer particao do TARGET_DISK montada fora de TARGET_ROOT, mas isenta incondicionalmente entradas [SWAP]. A isencao existe para o resume legitimo (swap ativada pelo proprio 00-mount em SWAP_PART), porem ela cobre QUALQUER swap — inclusive a swap do proprio sistema em execucao, se estiver no disco alvo. Num host instalado (que passa como fase 'live', ver finding da current_phase), swap ativa no TARGET_DISK e um forte indicio de que se esta na maquina errada, mas em vez de abortar como faz com mounts, o fluxo segue e do_gpt executa `swapoff` na swap do sistema vivo antes de zapear — assimetria injustificada com o tratamento dos mounts.",
+      "fix": "Na isencao de validate_vars, so tolerar [SWAP] quando `realpath \"$dev\"` == `realpath \"$(part_dev 2)\"` (a SWAP_PART esperada do nosso layout); qualquer outra swap ativa no disco alvo -> die com instrucao de swapoff manual, igual ao tratamento de particoes montadas."
+    },
+    {
+      "file": "lib.sh",
+      "location": "part_dev, linhas 343-350 (`if [[ \"$TARGET_DISK\" =~ [0-9]$ ]]; then echo \"${TARGET_DISK}p${n}\"`), e validate_vars linhas 167-170 que aceitam qualquer caminho com `-b` + lsblk TYPE=disk",
+      "severity": "low",
+      "title": "TARGET_DISK como symlink (/dev/disk/by-id, by-path) passa na validacao mas quebra part_dev — do_gpt zapa o disco e SO ENTAO morre",
+      "detail": "A regra do sufixo 'p' esta correta para todos os nomes de kernel com TYPE=disk (nvme0n1p1, mmcblk0p1, nbd0p1, vda1, sda1 — conferido; md/loop/dm sao barrados pelo TYPE). Porem validate_vars aceita symlinks estaveis como /dev/disk/by-id/nvme-XYZ (sao block device e lsblk reporta TYPE=disk), cujas particoes usam a convencao `-part1`, nao `p1`/`1`. Sequencia real: probe_gpt (via sgdisk pelo symlink) reporta layout nao-feito -> confirm_destruction -> `sgdisk --zap-all` DESTROI o disco (o certo, ao menos) -> o wait-loop por `-b /dev/disk/by-id/nvme-XYZp1` estoura os 10s e morre. Falha 'segura' quanto a atingir outro disco, mas deixa o disco zapado no meio da sub-etapa, e todos os probes/`_assert_not_mounted_elsewhere` subsequentes passam a operar sobre caminhos inexistentes (findmnt/blkid vazios retornam 'nao montado'/'sem fs' em vez de erro).",
+      "fix": "Em validate_vars, canonicalizar cedo: `TARGET_DISK=\"$(realpath -e \"$TARGET_DISK\")\" || die ...` antes das demais checagens (preserva o suporte a by-id/by-path, que sao ate mais seguros para o usuario digitar, e garante que part_dev sempre recebe um nome de kernel)."
+    }
+  ]
+}

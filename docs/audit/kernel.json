@@ -1,0 +1,20 @@
+{
+  "findings": [
+    {
+      "file": "kernel-fragment.config",
+      "location": "Bloco 6, linhas 166-171: \"#   DRM_TTM_HELPER (exigido em kernel >=6.11) -> sem prompt; garantido aqui\\n#     via DRM_BOCHS=m (que o seleciona)\" ... \"CONFIG_DRM_BOCHS=m\"",
+      "severity": "critical",
+      "title": "DRM_BOCHS nao seleciona mais DRM_TTM_HELPER no 6.18 — CONFIG_CHECK fatal do nvidia-drivers falha",
+      "detail": "No kernel v6.18, drivers/gpu/drm/tiny/Kconfig define DRM_BOCHS selecionando apenas DRM_CLIENT_SELECTION, DRM_GEM_SHMEM_HELPER e DRM_KMS_HELPER (o bochs foi convertido para GEM-SHMEM; o 'select DRM_TTM_HELPER' das versoes antigas sumiu — verificado verbatim no tag v6.18). Nada mais no defconfig+fragmento seleciona DRM_TTM_HELPER: o x86_64_defconfig do 6.18 traz DRM_I915=y, que seleciona DRM_TTM mas NAO DRM_TTM_HELPER (verificado em drivers/gpu/drm/i915/Kconfig v6.18), e DRM_VIRTIO_GPU usa shmem. Resultado: o .config final sai sem CONFIG_DRM_TTM_HELPER. O ebuild x11-drivers/nvidia-drivers-595.91.07 contem: kernel_is -ge 6 11 && linux_chkconfig_present DRM_FBDEV_EMULATION && CONFIG_CHECK+=\" DRM_TTM_HELPER\" — sem prefixo '~', ou seja, cheque FATAL no pkg_setup. Como o fragmento fixa CONFIG_DRM_FBDEV_EMULATION=y e o kernel e 6.18, o 'emerge x11-drivers/nvidia-drivers' morre SEMPRE: no bare metal (RTX 5060 Ti presente) e na VM com NVIDIA_MODE=force, horas depois de compilar o kernel inteiro. A sub-etapa 04-nvidia nunca conclui.",
+      "fix": "No bloco 6 do kernel-fragment.config, acrescentar CONFIG_DRM_QXL=m (no v6.18, drivers/gpu/drm/qxl/Kconfig: DRM_QXL seleciona DRM_TTM e DRM_TTM_HELPER — verificado verbatim). Pode manter CONFIG_DRM_BOCHS=m so pelo display stdvga do QEMU, mas ele nao serve mais como fonte de DRM_TTM_HELPER. Atualizar o comentario das linhas 166-168 para dizer que a garantia vem de DRM_QXL=m (e registrar a nota de apodrecimento: bochs perdeu o select de DRM_TTM_HELPER ao ser convertido para SHMEM)."
+    },
+    {
+      "file": "04-kernel.sh",
+      "location": "verify_kconfig(), linhas 158-177: array 'local -a required=( BLK_DEV_NVME ... DRM_SIMPLEDRM )' + loop 'grep -qx \"CONFIG_${sym}=y\"'",
+      "severity": "medium",
+      "title": "verify_kconfig nao assere DRM_TTM_HELPER, o requisito fatal do ebuild que o proprio plano lista",
+      "detail": "O gate duro existe exatamente para pegar simbolos que o merge_config/olddefconfig descarta em silencio, mas a lista nao testa DRM_TTM_HELPER — exigencia HARD (sem '~') do CONFIG_CHECK do nvidia-drivers em kernel >=6.11 com DRM_FBDEV_EMULATION presente, e listada no plano como requisito do bloco 6. E justamente o simbolo que regrediu no 6.18 (ver finding do kernel-fragment.config): hoje o instalador compila o kernel inteiro, verify_kconfig passa, e o emerge do nvidia morre depois. Detalhe de implementacao: nao basta acrescentar DRM_TTM_HELPER ao array 'required', porque o loop exige '=y' (grep -qx \"CONFIG_${sym}=y\") e DRM_TTM_HELPER fica legitimamente =m quando selecionado por um driver =m (ex.: DRM_QXL=m); o linux_chkconfig_present do ebuild aceita y ou m.",
+      "fix": "Adicionar em verify_kconfig, apos o loop do array required, um cheque separado que aceita y ou m: grep -Eqx 'CONFIG_DRM_TTM_HELPER=(y|m)' \"$config\" || missing+=(\"CONFIG_DRM_TTM_HELPER (y ou m) — exigido pelo CONFIG_CHECK do nvidia-drivers em kernel >=6.11 com DRM_FBDEV_EMULATION\")."
+    }
+  ]
+}

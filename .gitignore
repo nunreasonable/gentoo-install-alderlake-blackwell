@@ -1,0 +1,5 @@
+# Artefatos brutos da auditoria (a cópia publicada vive em docs/audit/)
+.review/
+
+# Logs e estado gerados durante a instalação
+*.log

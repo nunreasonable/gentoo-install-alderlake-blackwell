@@ -1,0 +1,20 @@
+{
+  "findings": [
+    {
+      "file": "04-kernel.sh",
+      "location": "do_nvidia, linhas 307-317: `cat > /etc/portage/package.accept_keywords/nvidia-drivers <<EOF ... >=x11-drivers/nvidia-drivers-${NVIDIA_MIN_VER} ~amd64` — nunca existe um rm -f correspondente (ao contrario do package.use/nvidia-drivers, removido na linha 334)",
+      "severity": "low",
+      "title": "package.accept_keywords/nvidia-drivers nunca e removido depois de escrito (assimetrico com package.use)",
+      "detail": "O arquivo so e escrito no caminho rede-de-seguranca (arvore antiga onde o estavel < NVIDIA_MIN_VER). Uma vez escrito, `>=x11-drivers/nvidia-drivers-580.173.02 ~amd64` fica no sistema instalado para sempre: todo `emerge -uDN @world` futuro passa a puxar nvidia-drivers ~amd64 (testing) mesmo depois que o estavel da arvore alcancar o minimo. O script trata o package.use com limpeza simetrica (rm -f no ramo >=595) mas nao o accept_keywords. Numa instalacao feita hoje (estavel 595.91.07 visivel) o arquivo nunca e criado, entao o impacto se restringe ao caminho de arvore desatualizada — mas nesse caso o efeito e permanente e silencioso.",
+      "fix": "Em do_nvidia, antes da primeira resolucao de versao: se /etc/portage/package.accept_keywords/nvidia-drivers existir, remova-o e rode resolve_nvidia_version; se o resultado ja satisfizer version_ge sem o arquivo, deixe-o removido; senao, siga para o fluxo atual que o reescreve. Isso mantem o arquivo apenas enquanto for realmente necessario, espelhando a semantica do package.use/nvidia-drivers."
+    },
+    {
+      "file": "04-kernel.sh",
+      "location": "gpu_present, linhas 70-76: `lspci -d 10de: 2>/dev/null | grep -q .` com fallback `grep -qi '^0x10de$' /sys/bus/pci/devices/*/vendor 2>/dev/null`",
+      "severity": "low",
+      "title": "gpu_present nao distingue 'sem GPU NVIDIA' de '/sys nao montado' — em chroot manual, NVIDIA_MODE=auto pula o driver no bare metal com GPU",
+      "detail": "Ambos os probes dependem de sysfs (lspci le /sys/bus/pci). O projeto suporta explicitamente rodar os scripts standalone para debug (require_phase so checa a sentinela /etc/gentoo-install/.inside-chroot, nao os mounts). Num chroot entrado manualmente sem `mount --rbind /sys`, lspci retorna vazio e o glob /sys/bus/pci/devices/*/vendor nao casa — gpu_present retorna falso na maquina real com a RTX 5060 Ti, e o modo auto grava `skipped-no-gpu` e conclui a instalacao sem driver, sem nenhum erro. O probe subsequente continua passando pelo mesmo motivo. Pelo install.sh orquestrado o problema nao ocorre (ensure_chroot_mounts monta /sys antes do chroot).",
+      "fix": "Em do_nvidia (ou no inicio de gpu_present), antes de concluir 'sem GPU': verificar que o barramento PCI e enxergavel, ex.: `compgen -G '/sys/bus/pci/devices/*' > /dev/null || die \"/sys/bus/pci vazio — /sys nao esta montado no chroot; monte-o (mount --rbind /sys ...) antes de decidir pular o nvidia\"`. Em hardware real (e em VM QEMU) /sys/bus/pci/devices nunca e vazio quando o sysfs esta montado, entao a guarda nao gera falso positivo."
+    }
+  ]
+}
