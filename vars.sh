@@ -140,6 +140,22 @@
 # yes = roda `emerge -uDN @world` na etapa 03 (demora; opcional na 1a instalacao).
 : "${UPDATE_WORLD:=no}"
 
+# Marcar os news items do Portage como LIDOS ao final da etapa 03? (yes|no)
+#
+# O default e "no", e deliberadamente conservador. Em qualquer valor o
+# instalador SEMPRE lista e imprime o conteudo integral das news no log
+# (`eselect news read --quiet new`, que exibe sem marcar). A diferenca:
+#
+#   no  (default) — as news continuam NAO LIDAS. O Portage segue avisando a
+#                   cada emerge ate voce le-las de fato. E o que garante que
+#                   uma instrucao de migracao obrigatoria (perfil 23.0,
+#                   merged-usr, mudanca de USE) nao passe despercebida e
+#                   reapareca como falha misteriosa de build em 04/05/06.
+#   yes           — marca como lidas ao final do 03, silenciando o aviso.
+#                   Use so em instalacao automatizada/descartavel (VM de teste)
+#                   onde voce ja sabe o conteudo das news.
+: "${READ_NEWS:=no}"
+
 # ---------------------------------------------------------------------------
 # Preflight de hardware
 # ---------------------------------------------------------------------------

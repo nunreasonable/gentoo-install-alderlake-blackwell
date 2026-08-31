@@ -208,11 +208,26 @@ eselect news list
 eselect news read new
 ```
 
-**Comportamento do instalador:** a etapa 03 imprime os news no log e os marca
-como lidos. Ele **nao** para para voce ler. Se `eselect news count new` falhar
-ou devolver saida nao-numerica, o script emite `log_warn` e segue — ele nunca
-afirma "zero news" sem ter tido exit 0 e saida numerica igual a zero. Ou seja:
-**a responsabilidade de ler e sua**, e a fonte e o log da etapa 03.
+**Comportamento do instalador:** a etapa 03 imprime o conteudo integral dos news
+no log (`eselect news read --quiet new` — exibe **sem** marcar como lido) e, com
+o default `READ_NEWS=no`, **deixa-os nao lidos de proposito**. Ele nao para para
+voce ler, mas o Portage vai continuar avisando a cada `emerge` ate voce le-los —
+esse aviso persistente e justamente a rede de seguranca.
+
+Depois de ler e aplicar o que for necessario, marque manualmente:
+
+```sh
+eselect news read new
+```
+
+Com `READ_NEWS=yes` em `vars.sh` o instalador marca como lidos ao final da etapa
+03. **So use isso em VM descartavel**: num sistema que voce vai manter, silenciar
+o aviso antes de ler e a maneira mais facil de perder uma migracao obrigatoria.
+
+Se `eselect news count new` falhar ou devolver saida nao-numerica, o script
+emite `log_warn` e segue — ele nunca afirma "zero news" sem ter tido exit 0 e
+saida numerica igual a zero. Ou seja: **a responsabilidade de ler e sua**, e a
+fonte e o log da etapa 03.
 
 Para reler depois, no sistema instalado:
 

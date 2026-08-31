@@ -187,9 +187,25 @@ report_news_items() {
     if (( count > 0 )); then
         log_warn "$count news item(s) do Portage nao lidos — conteudo registrado no log abaixo"
         eselect news list || true
-        # 'read new' imprime o conteudo (fica no log via tee) e marca como
-        # lido, para o aviso nao poluir os emerges seguintes.
-        eselect news read new || true
+
+        # 'read --quiet new' EXIBE o conteudo sem marcar como lido: o pager e
+        # desabilitado, mas o estado de leitura NAO e alterado. E a unica forma
+        # de logar o texto integral preservando o aviso do Portage nos emerges
+        # seguintes, que e o que garante que o operador humano tome ciencia.
+        eselect news read --quiet new || true
+
+        # Marcar como lido e uma decisao do OPERADOR, nunca do instalador.
+        # News do Gentoo carregam migracoes obrigatorias (perfil 23.0, merged-usr)
+        # que quebram 04/05/06 horas depois; engolir o aviso silenciosamente
+        # transforma uma instrucao de migracao em falha misteriosa de build.
+        # Por isso o default e READ_NEWS=no.
+        if [[ "$READ_NEWS" == "yes" ]]; then
+            log_warn "READ_NEWS=yes — marcando os $count news item(s) como lidos a pedido do usuario"
+            eselect news read new > /dev/null || true
+        else
+            log_warn "os news items acima permanecem NAO LIDOS (READ_NEWS=no, default seguro)"
+            log_warn "leia-os antes de usar o sistema: 'eselect news read new' — e marque como lidos so depois de aplicar o que for necessario"
+        fi
     else
         log_info "nenhum news item novo do Portage"
     fi

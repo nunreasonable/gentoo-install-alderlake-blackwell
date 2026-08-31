@@ -170,9 +170,44 @@ EOF
     emerge sys-kernel/gentoo-sources sys-kernel/linux-firmware sys-firmware/intel-microcode
 
     # Handbook: apontar /usr/src/linux para as fontes via eselect.
-    # "set 1" = a unica/primeira versao instalada — deterministico num sistema
-    # recem-instalado com um unico gentoo-sources.
-    eselect kernel set 1
+    #
+    # NAO usamos "eselect kernel set 1": o indice 1 e a PRIMEIRA linha da lista,
+    # nao "a arvore que acabamos de instalar". Numa instalacao nova com um unico
+    # gentoo-sources os dois coincidem, mas basta uma segunda arvore existir
+    # (retomada apos um `emerge` de outra versao, ou um --from 4 depois de
+    # atualizar as fontes) para o indice 1 apontar para a arvore ERRADA — e o
+    # kernel seria compilado a partir dela sem nenhum aviso.
+    #
+    # Em vez disso: perguntar ao portage QUAL versao ele instalou e selecionar
+    # essa arvore por NOME exato, do mesmo jeito que o perfil e selecionado no 03.
+    local src_ver src_dir
+    src_ver="$(portageq best_version / sys-kernel/gentoo-sources)" \
+        || die "nao consegui consultar a versao instalada de sys-kernel/gentoo-sources"
+    [[ -n "$src_ver" ]] || die "sys-kernel/gentoo-sources nao aparece como instalado apos o emerge"
+    # best_version devolve o atom completo (sys-kernel/gentoo-sources-6.18.48);
+    # o diretorio correspondente e /usr/src/linux-<versao>-gentoo.
+    src_dir="/usr/src/linux-${src_ver#sys-kernel/gentoo-sources-}-gentoo"
+    [[ -d "$src_dir" ]] \
+        || die "arvore de fontes esperada nao existe: $src_dir (portage reporta $src_ver) — verifique 'eselect kernel list'"
+
+    # Seleciona por NOME (nao por indice). Evitamos deliberadamente parsear a
+    # saida de 'eselect kernel list': o formato (indentacao, numeracao, o '*' do
+    # selecionado) e apresentacao, nao API. Se o eselect nao aceitar o nome,
+    # caimos no symlink direto — que e literalmente tudo que o eselect kernel
+    # faz, e o 'list' passa a mostrar essa arvore como selecionada do mesmo jeito.
+    if ! eselect kernel set "${src_dir#/usr/src/}" 2>/dev/null; then
+        log_warn "'eselect kernel set ${src_dir#/usr/src/}' falhou — apontando /usr/src/linux diretamente"
+        ln -sfn "$src_dir" /usr/src/linux
+    fi
+
+    # Verificacao apos instalar (invariante 6): o symlink tem que apontar para a
+    # arvore que o portage instalou, nao para outra qualquer.
+    local linked
+    linked="$(readlink -f /usr/src/linux)" \
+        || die "/usr/src/linux nao existe ou nao resolve apos o eselect kernel"
+    [[ "$linked" == "$(readlink -f "$src_dir")" ]] \
+        || die "/usr/src/linux aponta para '$linked', esperado '$src_dir' — recuse compilar a arvore errada"
+    log_info "fontes do kernel selecionadas: $src_dir ($src_ver)"
 
     # Sanidade: o ucode do 12600K (family 6 model 151 stepping 2) que o
     # fragmento embute via EXTRA_FIRMWARE deve existir. Em VM a CPU e outra,

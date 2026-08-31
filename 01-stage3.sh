@@ -437,6 +437,47 @@ probe_extract() {
     [[ "$(detect_flavor)" == "$INIT_SYSTEM" ]]
 }
 
+# write_stage3_identity: registra a PROCEDENCIA CRIPTOGRAFICA do stage3.
+#
+# Motivacao: probe_extract e necessariamente funcional-e-barato (existencia de
+# /etc/gentoo-release + flavor detectado), porque re-hashear a arvore inteira a
+# cada resume seria proibitivo. O preco disso e que o probe nao consegue
+# distinguir "arvore extraida de um stage3 verificado" de "arvore que foi
+# alterada depois". Nao e vulnerabilidade — quem escreve em $TARGET_ROOT ja tem
+# posicao privilegiada — mas destroi a reprodutibilidade: dado um sistema
+# instalado, nao havia como responder "de qual stage3 isto nasceu?".
+#
+# Este arquivo responde essa pergunta. Fica no filesystem ALVO (nao no WORKDIR),
+# entao sobrevive ao cleanup do Handbook "Removing tarballs" e ao proprio
+# --reset, e viaja junto com o sistema instalado.
+write_stage3_identity() {
+    local dest="$TARGET_ROOT/var/lib/gentoo-install"
+    local name expected
+    name="$(basename "$TARBALL")"
+    # Hash JA VERIFICADO em 01-verify (assinatura GPG do .sha256 conferida
+    # contra a chave releng). Reaproveitamos o valor em vez de re-hashear.
+    expected="$(awk -v f="$name" '$2 == f && $1 ~ /^[0-9a-fA-F]{64}$/ { print tolower($1); exit }' "$SHA256_VERIFIED" 2>/dev/null)" || expected=""
+
+    mkdir -p "$dest"
+    cat > "$dest/stage3.identity" <<EOF
+# Procedencia do stage3 que originou este sistema. Gerado por 01-stage3.sh.
+# NAO APAGUE: e o unico registro de qual tarball assinado deu origem a arvore.
+# Nao e usado como probe (o probe e funcional) — serve para auditoria e
+# reprodutibilidade: "este sistema nasceu do stage3 X, hash Y, verificado
+# contra a chave releng Z".
+stage3_file=$name
+stage3_path=$STAGE3_REL_PATH
+stage3_sha256=${expected:-desconhecido}
+stage3_size=$STAGE3_SIZE
+stage3_flavor=$INIT_SYSTEM
+releng_key_fpr=$RELENG_KEY_FPR
+mirror=$MIRROR
+EOF
+    [[ -n "$expected" ]] \
+        || log_warn "stage3.identity gravado sem sha256 (nao consegui reler o hash verificado de $SHA256_VERIFIED)"
+    log_info "procedencia registrada em /var/lib/gentoo-install/stage3.identity ($name)"
+}
+
 do_extract() {
     log_info "extraindo $(basename "$TARBALL") em $TARGET_ROOT (leva alguns minutos)..."
     # Sentinela ANTES do tar: se a extracao for interrompida, o proximo run a
@@ -446,6 +487,9 @@ do_extract() {
     # xattrs/capabilities; --numeric-owner ignora o passwd do live ISO.
     tar xpf "$TARBALL" --xattrs-include='*.*' --numeric-owner -C "$TARGET_ROOT"
     rm -f "$EXTRACT_STARTED"
+    # Procedencia DEPOIS do tar: o tarball recria var/ e apagaria o arquivo se
+    # ele fosse escrito antes.
+    write_stage3_identity
     # Marker com valor: registra o flavor extraido (openrc|systemd).
     mark_done 01-extract "$INIT_SYSTEM"
 }

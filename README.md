@@ -148,15 +148,24 @@ incondicionalmente, fora de `run_step`.
 
 ### Gentoo News **[SUPORTADO]**
 
-A etapa 03 conta os news items novos, **imprime a lista no log** e os marca como
-lidos. Ela **nao para** para voce ler.
+A etapa 03 conta os news items novos e **imprime o conteudo integral no log**
+(`eselect news read --quiet new`, que exibe **sem** marcar como lido). Ela
+**nao para** para voce ler.
+
+Por padrao (`READ_NEWS=no`) as news continuam **NAO LIDAS**: o Portage segue
+avisando a cada `emerge` ate voce le-las de fato. E deliberado — news carregam
+migracoes obrigatorias (perfil 23.0, merged-usr, mudanca de USE) que quebram as
+etapas 04/05/06 horas depois, e marcar como lido automaticamente transforma uma
+instrucao de migracao numa falha misteriosa de build.
+
+Com `READ_NEWS=yes` a etapa 03 marca como lidas ao final, silenciando o aviso.
+Use so em instalacao automatizada/descartavel onde voce ja conhece o conteudo.
 
 O relato distingue tres estados: falha na consulta (`log_warn` com o exit code),
 saida nao-numerica (`log_warn` de saida inesperada) e zero real. A afirmacao
 "nenhum news item novo" so aparece com exit 0 **e** saida numerica igual a zero
 — ela nunca e impressa por engano.
 
-News items carregam migracoes obrigatorias que podem quebrar as etapas 04/05/06.
 **A responsabilidade de ler e sua**, e a fonte e o log da etapa 03.
 
 ---
