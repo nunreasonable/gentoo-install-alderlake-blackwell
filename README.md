@@ -380,6 +380,27 @@ rc-service sshd start
 # do host: scp -P 2222 -r gentoo-install/ root@localhost:/root/
 
 cd /root/gentoo-install
+./tests/run-in-qemu-guest.sh
+```
+
+`run-in-qemu-guest.sh` le o perfil da VM de
+[`tests/qemu-profile.env`](tests/qemu-profile.env), que fixa
+**`TARGET_DISK=/dev/vda`** (o disco virtio do QEMU), `AUTO_CONFIRM=yes`,
+`NVIDIA_MODE=force`, e deriva `MAKEOPTS` das vCPUs da VM. Ele existe para o
+disco alvo **nao** depender de voce lembrar de digitar a variavel: esquecer
+faz o instalador abortar com `TARGET_DISK=/dev/nvme0n1 nao existe` — que e o
+comportamento **correto** (ele nunca adivinha disco), mas o teste nao roda.
+
+O runner **nao afrouxa nenhuma guarda**: ele delega para o `install.sh`, que
+segue rodando `validate_vars`, `preflight_hardware` e `confirm_destruction`.
+Ele **adiciona** uma guarda propria — recusa rodar se nao detectar
+virtualizacao, porque o perfil carrega `AUTO_CONFIRM=yes`.
+
+Flags sao repassadas: `./tests/run-in-qemu-guest.sh --only 0`.
+
+Equivalente manual, se preferir explicito na linha de comando:
+
+```sh
 TARGET_DISK=/dev/vda AUTO_CONFIRM=yes NVIDIA_MODE=force MAKEOPTS=-j13 ./install.sh
 ```
 
