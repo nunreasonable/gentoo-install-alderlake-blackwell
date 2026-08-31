@@ -46,14 +46,31 @@ pkg_installed() {
     compgen -G "/var/db/pkg/${1}-[0-9]*" > /dev/null
 }
 
-# kernel_release: imprime a release do kernel corrente (ex.: 6.18.48-gentoo)
-# derivada do symlink /usr/src/linux. Sem CONFIG_LOCALVERSION (defconfig) e
-# sem arvore git, o `make install` usa exatamente esse nome em /boot e
-# /lib/modules. Retorna 1 se o symlink nao aponta para uma arvore valida.
+# kernel_release: imprime a release do kernel corrente (ex.: 6.18.48-gentoo).
+# Fonte PRIMARIA: include/config/kernel.release, gerado pelo proprio build e
+# exatamente o nome que o `make install` usa em /boot e /lib/modules — inclui
+# CONFIG_LOCALVERSION e sufixo de arvore git, que o nome do diretorio NAO tem.
+# Derivar do nome do diretorio como fonte primaria divergia do 05 (que sempre
+# leu kernel.release): o probe procurava vmlinuz-<nome-errado>, recompilava
+# ~1h a cada execucao e o probe_nvidia nunca reconhecia o driver.
+# Fallback (so ANTES do primeiro build, quando kernel.release ainda nao
+# existe): o nome do diretorio apontado pelo symlink /usr/src/linux, que basta
+# para o probe_sources validar o `eselect kernel set`.
+# Retorna 1 se nao ha arvore valida.
 kernel_release() {
     local src
     src="$(readlink -f /usr/src/linux 2>/dev/null)" || return 1
     [[ -n "$src" && -f "$src/Makefile" ]] || return 1
+    if [[ -r "$src/include/config/kernel.release" ]]; then
+        # tr -d: o arquivo termina em newline; o $() ja a remove, mas um
+        # kernel.release corrompido com CR/espacos quebraria os globs.
+        local rel
+        rel="$(tr -d '[:space:]' < "$src/include/config/kernel.release")"
+        if [[ -n "$rel" ]]; then
+            printf '%s\n' "$rel"
+            return 0
+        fi
+    fi
     basename "$src" | sed 's/^linux-//'
 }
 
@@ -71,19 +88,33 @@ version_ge() {
 
 # gpu_present: ha GPU NVIDIA (vendor 10de) no barramento PCI?
 # lspci -d 10de: e o probe canonico; fallback via sysfs se lspci faltar.
+# TRES estados — probe puro, SEM efeitos colaterais (nao chama die):
+#   0 = GPU NVIDIA presente
+#   1 = barramento legivel e sem GPU NVIDIA
+#   2 = INDETERMINADO (sysfs ausente) — a POLITICA fica com o chamador.
+# Antes esta funcao chamava die() direto, matando o script no meio da
+# avaliacao do probe_nvidia (com CURRENT_STEP setado), o que viola o contrato
+# "probe nao pode ter efeitos colaterais" (lib.sh:392-393).
 gpu_present() {
-    # Guarda: ambos os probes dependem do sysfs (lspci le /sys/bus/pci). Num
-    # chroot entrado MANUALMENTE sem `mount --rbind /sys`, o barramento parece
-    # vazio e NVIDIA_MODE=auto pularia o driver em silencio NO BARE METAL com
-    # GPU. Em hardware real e em VM QEMU sempre ha dispositivos PCI, entao
-    # barramento vazio == /sys ausente — morrer alto, nunca chutar "sem GPU".
-    compgen -G '/sys/bus/pci/devices/*' > /dev/null \
-        || die "gpu_present: /sys/bus/pci/devices vazio — /sys nao esta montado no chroot; monte-o (mount --rbind /sys <raiz>/sys) antes de decidir sobre o nvidia"
+    # Ambos os probes dependem do sysfs (lspci le /sys/bus/pci). Num chroot
+    # entrado MANUALMENTE sem `mount --rbind /sys`, o barramento parece vazio
+    # e NVIDIA_MODE=auto pularia o driver em silencio NO BARE METAL com GPU.
+    # Em hardware real e em VM QEMU sempre ha dispositivos PCI, entao
+    # barramento vazio == /sys ausente — nunca chutar "sem GPU".
+    compgen -G '/sys/bus/pci/devices/*' > /dev/null || return 2
     if command -v lspci > /dev/null 2>&1; then
         lspci -d 10de: 2>/dev/null | grep -q .
     else
         grep -qi '^0x10de$' /sys/bus/pci/devices/*/vendor 2>/dev/null
     fi
+}
+
+# require_pci_bus: guarda de POLITICA, fail-closed, para os chamadores que
+# precisam decidir sobre o nvidia. Separada do probe para que so o do_fn
+# (efeito colateral permitido) mate o script.
+require_pci_bus() {
+    compgen -G '/sys/bus/pci/devices/*' > /dev/null \
+        || die "/sys/bus/pci/devices vazio — /sys nao esta montado no chroot; monte-o (mount --rbind /sys <raiz>/sys) antes de decidir sobre o nvidia"
 }
 
 # resolve_nvidia_version: imprime a versao do melhor nvidia-drivers VISIVEL
@@ -177,11 +208,27 @@ verify_kconfig() {
         VIRTIO_PCI          # mesmo kernel boota na VM QEMU
         VIRTIO_BLK
         USB_XHCI_HCD        # teclado USB antes de modulos
+        HID                 # camada HID: sem ela nao ha teclado nenhum
+        USB_HID             # tristate no Kconfig: pode virar =m e sumir do
+        HID_GENERIC         #   boot (prompt de fsck/senha) sem initramfs
+        EFI                 # suporte EFI (EFI_STUB sozinho nao basta)
+        DEVTMPFS            # base do DEVTMPFS_MOUNT abaixo
+        NLS_CODEPAGE_437    # sem os dois NLS, VFAT_FS=y monta a ESP so por
+        NLS_ISO8859_1       #   sorte do NLS_DEFAULT
+        FW_LOADER           # firmware GSP: OBRIGATORIO em Blackwell +
+                            #   EXTRA_FIRMWARE (early ucode sem initramfs)
         MODULES             # nvidia e out-of-tree
         X86_INTEL_PSTATE    # unico cpufreq hybrid-aware (P+E cores)
         SCHED_MC_PRIO       # ITMT: P-cores preferidos sobre E-cores
         MTRR                # exigido pelo nvidia-drivers
+        # Grupo de console pre-driver: sem ele o boot e TELA PRETA ate o
+        # nvidia-drm assumir — e o fragmento (blocos 143-157) ja pede os
+        # quatro, entao a ausencia aqui e furo do gate, nao escolha.
+        DRM                 # base do DRM (SIMPLEDRM/FBDEV_EMULATION dependem)
+        SYSFB_SIMPLEFB      # framebuffer que a UEFI/GOP deixou
         DRM_SIMPLEDRM       # console pre-nvidia + puxa DRM_KMS_HELPER
+        DRM_FBDEV_EMULATION # fbdev sobre DRM
+        FRAMEBUFFER_CONSOLE # fbcon: o console de texto propriamente dito
     )
     for sym in "${required[@]}"; do
         grep -qx "CONFIG_${sym}=y" "$config" || missing+=("CONFIG_${sym}=y (ausente ou nao built-in)")
@@ -232,7 +279,22 @@ probe_kernel_build() {
     frag="$(fragment_hash)"
     [[ -n "$frag" ]] || return 1
     [[ "$(step_value 04-kernel-build)" == "$frag" ]] && return 0
-    [[ "$(cat "/boot/kernel-fragment.sha256-${kver}" 2>/dev/null)" == "$frag" ]] && return 0
+    # Fonte 2: a sentinela em /boot. Ela grava DOIS campos — o hash do
+    # fragmento E o sha256 do vmlinuz que descreve — e os dois precisam bater.
+    # So o hash do fragmento nao amarrava a sentinela ao kernel: um build
+    # posterior que falhasse no meio deixava a sentinela antiga validando um
+    # vmlinuz que ja nao correspondia a ela.
+    local sent_frag sent_vm vmlinuz
+    if [[ -r "/boot/kernel-fragment.sha256-${kver}" ]]; then
+        read -r sent_frag sent_vm < "/boot/kernel-fragment.sha256-${kver}" || true
+        if [[ "$sent_frag" == "$frag" && -n "$sent_vm" ]]; then
+            vmlinuz="/boot/vmlinuz-${kver}"
+            if [[ -f "$vmlinuz" ]] \
+               && [[ "$(sha256sum "$vmlinuz" 2>/dev/null | awk '{print $1}')" == "$sent_vm" ]]; then
+                return 0
+            fi
+        fi
+    fi
     return 1
 }
 
@@ -241,6 +303,15 @@ do_kernel_build() {
         || die "fragmento $FRAGMENT_FILE nao encontrado — ele deve viver no mesmo diretorio dos scripts"
     local frag_hash
     frag_hash="$(fragment_hash)"
+
+    # Sentinela invalidada ANTES do build (padrao do 01): a partir daqui o
+    # kernel em /boot esta em transicao. Se o build ou o `make install`
+    # falharem no meio, NAO fica sentinela antiga validando um vmlinuz que ja
+    # nao corresponde a ela — o proximo probe falha e o build recomeca.
+    local kver_old
+    if kver_old="$(kernel_release)"; then
+        rm -f "/boot/kernel-fragment.sha256-${kver_old}"
+    fi
 
     # Subshell: o cd nao vaza para o resto do script; qualquer falha dentro
     # derruba o script via set -e + trap ERR.
@@ -274,10 +345,16 @@ do_kernel_build() {
     # Hash do fragmento TAMBEM em /boot, junto do vmlinuz: e um artefato do
     # proprio build (fora do state dir), entao sobrevive ao --reset e permite
     # ao probe reconhecer este kernel como feito sem depender do marker.
-    local kver
+    # Promovida so AQUI, depois do make install: dois campos, "<hash-do-
+    # fragmento> <sha256-do-vmlinuz>", para amarrar a sentinela ao kernel que
+    # ela de fato descreve.
+    local kver vm_hash
     kver="$(kernel_release)" \
         || die "build concluido mas /usr/src/linux nao aponta para uma arvore valida — nao da para derivar a release do kernel"
-    printf '%s\n' "$frag_hash" > "/boot/kernel-fragment.sha256-${kver}"
+    [[ -f "/boot/vmlinuz-${kver}" ]] \
+        || die "make install concluido mas /boot/vmlinuz-${kver} nao existe — a release derivada nao casa com o que foi instalado em /boot"
+    vm_hash="$(sha256sum "/boot/vmlinuz-${kver}" | awk '{print $1}')"
+    printf '%s %s\n' "$frag_hash" "$vm_hash" > "/boot/kernel-fragment.sha256-${kver}"
 
     # Marker com valor: o hash do fragmento usado neste build.
     mark_done 04-kernel-build "$frag_hash"
@@ -296,21 +373,25 @@ probe_nvidia() {
     if [[ "$NVIDIA_MODE" == "skip" ]]; then
         return 0
     fi
-    local marker
+    # probe funcional: pacote instalado no vardb...
+    local marker inst kver gpu
     marker="$(step_value 04-nvidia)"
-    if [[ "$marker" == "skipped-no-gpu" ]]; then
-        # force ignora o skip anterior: instala mesmo sem GPU
-        [[ "$NVIDIA_MODE" == "force" ]] && return 1
-        # "skipped-no-gpu" so vale ENQUANTO nao houver GPU visivel: no bare
-        # metal (GPU presente) a sub-etapa reativa sozinha
-        if gpu_present; then
-            return 1
-        fi
+    inst="$(installed_nvidia_version)"
+
+    # "Nada a fazer por falta de GPU" e derivado do ESTADO REAL (gpu_present +
+    # NVIDIA_MODE + vardb), NUNCA do marker: este era o unico ramo do projeto
+    # em que o marker alterava a SEMANTICA do probe. O marker "skipped-no-gpu"
+    # vira registro de auditoria puro. Exigir vardb vazio garante que jamais
+    # reportamos "pulado por falta de GPU" num sistema com o driver instalado
+    # (esse caso cai no probe funcional abaixo, que e mais forte).
+    gpu_present && gpu=0 || gpu=$?
+    if [[ -z "$inst" && "$gpu" -eq 1 && "$NVIDIA_MODE" == "auto" ]]; then
+        # sem GPU, sem driver e modo auto: do_nvidia so registraria o skip
         return 0
     fi
-    # probe funcional: pacote instalado no vardb...
-    local inst kver
-    inst="$(installed_nvidia_version)"
+    # gpu=2 (sysfs ausente) NAO satisfaz o ramo acima: fail-closed, cai no
+    # probe funcional e, se ele falhar, do_nvidia morre em require_pci_bus.
+
     [[ -n "$inst" ]] || return 1
     # ...E modulo presente na arvore do kernel CORRENTE (upgrade de kernel
     # muda a versao e derruba este teste => reinstala o driver)
@@ -326,6 +407,9 @@ probe_nvidia() {
 }
 
 do_nvidia() {
+    # Politica no do_fn (efeito colateral permitido aqui, ao contrario do
+    # probe): sysfs ausente e erro fatal, nunca "sem GPU".
+    require_pci_bus
     if ! gpu_present; then
         if [[ "$NVIDIA_MODE" == "auto" ]]; then
             log_warn "=================================================================="
@@ -383,6 +467,31 @@ EOF
     else
         # arquivo e NOSSO (so este script o escreve) — remover e seguro
         rm -f /etc/portage/package.use/nvidia-drivers
+        # ...mas remover o NOSSO arquivo nao basta: em >=595 o flag kernel-open
+        # nao existe mais e o emerge morre com "unknown USE flag". Se o usuario
+        # deixou kernel-open em OUTRO arquivo do package.use/ ou no make.conf,
+        # a falha so apareceria depois de horas de compilacao. Varremos antes
+        # e abortamos com mensagem acionavel (fail-closed).
+        local -a stray=()
+        local f
+        if [[ -d /etc/portage/package.use ]]; then
+            while IFS= read -r f; do
+                stray+=("$f")
+            done < <(grep -rlsE '(^|[[:space:]])-?kernel-open([[:space:]]|$)' \
+                        /etc/portage/package.use 2>/dev/null || true)
+        fi
+        # make.conf: so o USE global importa (linhas comentadas nao contam)
+        if [[ -f /etc/portage/make.conf ]] \
+           && grep -qsE '^[[:space:]]*USE=.*[^-[:alnum:]]kernel-open' /etc/portage/make.conf; then
+            stray+=(/etc/portage/make.conf)
+        fi
+        if (( ${#stray[@]} > 0 )); then
+            local s
+            for s in "${stray[@]}"; do
+                log_error "kernel-open encontrado em: $s"
+            done
+            die "nvidia-drivers $ver (ramo >=595) NAO tem mais o USE flag kernel-open (os modulos abertos sao sempre usados) — remova 'kernel-open' dos arquivos listados acima e re-execute, senao o emerge falhara apos horas de compilacao"
+        fi
     fi
 
     # Emerge do driver (compila o modulo contra /usr/src/linux recem-buildado;

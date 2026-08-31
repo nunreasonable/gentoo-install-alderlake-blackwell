@@ -16,6 +16,9 @@
 #   - (systemd) machine-id + systemd-firstboot + preset-all (enable-only)
 #
 # Cada sub-etapa passa por run_step com probe FUNCIONAL (o marker e so cache).
+# Unica excecao: o preset-all (enable-only) roda SEMPRE, fora de run_step —
+# nao ha probe funcional barato para ele e a acao nunca desabilita nada (a
+# justificativa completa esta no comentario da propria funcao).
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -112,8 +115,17 @@ run_step 06-hostname probe_hostname do_hostname
 # Idempotente: reescreve as linhas de loopback existentes ou faz append.
 # ---------------------------------------------------------------------------
 
+# Probe ancorado nas DUAS linhas de loopback que do_hosts escreve (no espirito
+# do probe_fstab do 03): o hostname precisa aparecer como campo proprio depois
+# do endereco. Um "$TARGET_HOSTNAME" solto num comentario ou numa linha de rede
+# qualquer NAO conta como feito.
 probe_hosts() {
-    grep -qwF "$TARGET_HOSTNAME" /etc/hosts 2>/dev/null
+    local host_re
+    # o hostname vira parte de uma ERE: escapa os metacaracteres (o '.' de um
+    # FQDN e o mais provavel) para nao casar por acidente.
+    host_re="$(sed 's/[][^$.*\\+?(){}|/]/\\&/g' <<< "$TARGET_HOSTNAME")"
+    grep -Eq "^127\.0\.0\.1[[:blank:]]+([^[:blank:]#]+[[:blank:]]+)*${host_re}([[:blank:]]|$)" /etc/hosts 2>/dev/null || return 1
+    grep -Eq "^::1[[:blank:]]+([^[:blank:]#]+[[:blank:]]+)*${host_re}([[:blank:]]|$)" /etc/hosts 2>/dev/null
 }
 
 do_hosts() {
@@ -174,7 +186,7 @@ do_keymap() {
 run_step 06-keymap probe_keymap do_keymap
 
 # ---------------------------------------------------------------------------
-# 06-machine-id + 06-firstboot + 06-preset — Handbook (systemd): Init and
+# 06-machine-id + 06-firstboot + presets — Handbook (systemd): Init and
 # boot configuration -> systemd. Exclusivos do systemd; no OpenRC nao
 # existem e sao pulados por completo.
 # ---------------------------------------------------------------------------
@@ -213,24 +225,27 @@ do_firstboot() {
 # EXATAMENTE enable-only: o preset-all completo poderia DESABILITAR os
 # `systemctl enable` de sshd/dhcpcd feitos em 06-services; enable-only nunca
 # desliga nada, entao a ordem relativa a 06-services e indiferente.
-# Probe por marker (excecao consciente a regra "probe funcional"): nao ha
-# estado funcional barato/estavel para inspecionar — o conjunto de unidades
-# presetadas depende dos arquivos *-preset da versao instalada — e a acao e
-# nao-destrutiva e inofensiva de re-executar, entao o marker basta como cache.
-probe_preset() {
-    step_done 06-preset
-}
-
-do_preset() {
+# SEM run_step, de proposito: roda SEMPRE, como report_news_items (03:148) e
+# refresh_environment (03:240). Nao existe probe funcional barato e estavel
+# aqui — o conjunto de unidades presetadas depende dos arquivos *-preset da
+# versao instalada —, e um probe por marker seria pior que nada: um marker
+# gravado sem o preset ter surtido efeito (state restaurado, execucao parcial,
+# preset-all que falhou no meio) deixaria unidades como systemd-timesyncd
+# desabilitadas para sempre, sem nada detectar. Como a acao e barata,
+# naturalmente idempotente e enable-only NUNCA desabilita nada, executar
+# incondicionalmente e estritamente mais seguro do que confiar num cache.
+apply_distro_presets() {
     systemctl preset-all --preset-mode=enable-only
-    mark_done 06-preset
     log_info "presets da distro aplicados (systemctl preset-all --preset-mode=enable-only)"
 }
 
 if [[ "$INIT_SYSTEM" == "systemd" ]]; then
     run_step 06-machine-id probe_machine_id do_machine_id
     run_step 06-firstboot probe_firstboot do_firstboot
-    run_step 06-preset probe_preset do_preset
+    apply_distro_presets
+    # marker legado de quando o preset passava por run_step: se ficou de uma
+    # instalacao anterior, some agora — nao ha mais nada que o consulte.
+    clear_marker 06-preset
 else
     log_info "INIT_SYSTEM=openrc — pulando machine-id/firstboot/preset (exclusivos do systemd)"
 fi

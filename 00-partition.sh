@@ -48,16 +48,34 @@ _part_matches() {
     grep -q  "^Partition name: '${label}'" <<< "$info" || return 1
 }
 
+# _canon_dev <device>: imprime o caminho canonico do device. Usado para montar
+# padroes de grep contra /proc/swaps, que lista sempre o caminho resolvido.
+# Se o realpath falhar (componente de diretorio ausente, symlink stale) o
+# padrao viraria "^ " e a guarda de swap seria um no-op SILENCIOSO — por isso
+# a falha e fatal aqui em vez de virar string vazia (fail-closed).
+_canon_dev() {
+    local dev="$1" rp
+    rp="$(realpath "$dev" 2>/dev/null)" \
+        || die "nao foi possivel resolver o caminho canonico de '$dev' (realpath falhou) — nao e seguro seguir com as guardas de swap/mount"
+    [[ -n "$rp" ]] \
+        || die "realpath de '$dev' retornou vazio — nao e seguro seguir com as guardas de swap/mount"
+    printf '%s\n' "$rp"
+}
+
 # _assert_not_mounted_elsewhere <device>: mkfs/mkswap recusam rodar se a
 # particao estiver montada (ou ativa como swap) em qualquer lugar — o do_fn
 # so roda quando o filesystem esta errado/ausente, entao qualquer mount ativo
 # aqui e situacao anomala que exige intervencao manual.
 _assert_not_mounted_elsewhere() {
-    local dev="$1" mnt
-    mnt="$(findmnt -rno TARGET "$dev" 2>/dev/null || true)"
+    local dev="$1" mnt rp
+    # --source: sem ele o findmnt adivinha se o argumento e device ou
+    # mountpoint. Um device com N mounts devolve N linhas; 'paste -sd,' as
+    # junta numa unica linha para nao deformar a mensagem do die.
+    mnt="$(findmnt -rno TARGET --source "$dev" 2>/dev/null | paste -sd, - || true)"
     [[ -z "$mnt" ]] \
         || die "particao $dev esta montada em '$mnt' — desmonte antes de reformatar"
-    if grep -q "^$(realpath "$dev") " /proc/swaps; then
+    rp="$(_canon_dev "$dev")"
+    if grep -q "^${rp} " /proc/swaps; then
         die "particao $dev esta ativa como swap — rode swapoff antes de reformatar"
     fi
 }
@@ -82,14 +100,37 @@ REFORMAT_CONFIRMED="no"
 # o "ERASE <disco>" nunca foi digitado nesta execucao — re-exige a mesma
 # confirmacao do do_gpt antes de reformatar. Particao recem-criada ou sem
 # assinatura segue sem prompt.
+# DELIBERADAMENTE nao delega a confirm_destruction: aquela funcao honra
+# AUTO_CONFIRM=yes e retornaria 0 sem perguntar. O bypass faz sentido no
+# do_gpt, onde a destruicao e o pedido EXPLICITO do operador (o layout nao
+# bate, veio-se aqui para reparticionar). Aqui nao: a destruicao e um efeito
+# COLATERAL inesperado de editar vars.sh (ex.: trocar ROOT_FS), num disco cujo
+# layout GPT ja estava correto — provavelmente uma instalacao anterior com
+# dados. Por isso o prompt e exigido mesmo em VM/automacao. Sem tty, morre.
 _confirm_reformat() {
-    local dev="$1" fstype
+    local dev="$1" fstype expected reply
     [[ "$GPT_RECREATED" == "no" ]] || return 0
     fstype="$(_fs_type "$dev")"
     [[ -n "$fstype" ]] || return 0
     [[ "$REFORMAT_CONFIRMED" == "no" ]] || return 0
+    log_warn "=================================================================="
     log_warn "particao $dev contem um filesystem '$fstype' que sera destruido, mas a confirmacao ERASE nao foi exigida nesta execucao (00-gpt foi pulada: o layout GPT ja batia)"
-    confirm_destruction
+    log_warn "Isto normalmente significa que o disco tem uma instalacao anterior COM DADOS e que apenas os filesystems serao refeitos."
+    log_warn "Para reparticionar do zero use --reset --repartition."
+    log_warn "=================================================================="
+    lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINT "$TARGET_DISK" || true
+    if [[ "$AUTO_CONFIRM" == "yes" ]]; then
+        log_warn "AUTO_CONFIRM=yes NAO se aplica aqui: reformatar sem ter reparticionado e destruicao nao solicitada — confirmacao interativa obrigatoria"
+    fi
+    expected="REFORMAT $dev"
+    printf '\nPara confirmar a destruicao do filesystem existente, digite exatamente: %s\n> ' "$expected"
+    # le do tty diretamente (stdout/stderr passam pelo tee do logging); sem tty
+    # (automacao) o read falha e o die e o comportamento fail-closed correto.
+    IFS= read -r reply < /dev/tty \
+        || die "nao foi possivel ler a confirmacao do terminal — reformatacao de $dev abortada sem tocar no disco"
+    [[ "$reply" == "$expected" ]] \
+        || die "confirmacao incorreta (recebido: '$reply') — abortando sem tocar no disco"
+    log_info "reformatacao de $dev confirmada pelo usuario"
     REFORMAT_CONFIRMED="yes"
 }
 
@@ -126,12 +167,21 @@ do_gpt() {
     # Solta qualquer uso residual do disco alvo antes do zap: desativa swap e
     # desmonta o alvo (validate_vars ja garantiu que nada esta montado fora de
     # $TARGET_ROOT).
-    local dev mnt
-    while read -r dev mnt; do
-        [[ "$mnt" == "[SWAP]" ]] || continue
-        swapoff "$dev"
-        log_info "swap desativado em $dev"
-    done < <(lsblk -nrpo NAME,MOUNTPOINT "$TARGET_DISK")
+    # FONTE DE VERDADE = /proc/swaps via _swap_is_active, nao a coluna
+    # MOUNTPOINT do lsblk: ela e singular e ja escondeu mounts adicionais do
+    # mesmo device (mesma armadilha corrigida nas guardas de validate_vars).
+    # Fail-closed: se nao der para enumerar as particoes, morre ANTES do zap em
+    # vez de seguir achando que nao ha swap ativa.
+    local dev target_parts
+    target_parts="$(_target_disk_parts)" \
+        || die "nao foi possivel enumerar as particoes de '$TARGET_DISK' (lsblk falhou) — abortando antes do zap em vez de zapear com swap possivelmente ativa"
+    while read -r dev; do
+        [[ -n "$dev" ]] || continue
+        if _swap_is_active "$dev"; then
+            swapoff "$dev"
+            log_info "swap desativado em $dev"
+        fi
+    done <<< "$target_parts"
 
     # umount -R cobre tambem pseudo-mounts (proc/sys/dev/run) que
     # ensure_chroot_mounts possa ter deixado sob o alvo — eles nao aparecem no
@@ -155,12 +205,22 @@ do_gpt() {
 
     # Cinto e suspensorio: qualquer particao do disco ainda montada em outro
     # lugar (validate_vars ja barrou esse cenario, mas confere antes do zap).
-    # sort -rk2 desmonta os mountpoints mais profundos antes.
-    while read -r dev mnt; do
-        [[ -n "$mnt" && "$mnt" != "[SWAP]" ]] || continue
-        umount "$mnt"
-        log_info "desmontado $mnt"
-    done < <(lsblk -nrpo NAME,MOUNTPOINT "$TARGET_DISK" | sort -rk2)
+    # Desmonta pelo DEVICE, nao pelo MOUNTPOINT: o lsblk -nr emite o alvo com
+    # escapes octais (espaco vira \x20) e passar essa string crua ao umount
+    # falharia — matando o script DEPOIS do ERASE ja aceito, com o disco
+    # prestes a ser zapado. 'umount "$dev"' e imune ao escaping e derruba
+    # todos os mountpoints daquele device.
+    local part
+    while read -r part; do
+        [[ -n "$part" ]] || continue
+        # findmnt --source e a fonte de verdade (o MOUNTPOINT do lsblk e
+        # singular e esconderia mounts adicionais do mesmo device).
+        if findmnt -rno TARGET --source "$part" > /dev/null 2>&1; then
+            umount -- "$part" \
+                || die "nao foi possivel desmontar $part — feche o que estiver usando o alvo e re-execute"
+            log_info "desmontado o device $part"
+        fi
+    done < <(lsblk -nrpo NAME --list "$TARGET_DISK")
 
     # Holders ativos (LVM/LUKS/RAID de uma instalacao anterior, que live ISOs
     # costumam auto-ativar) seguram a tabela ANTIGA no kernel: o BLKRRPART do
@@ -168,9 +228,26 @@ do_gpt() {
     # antigos continuariam validos com a geometria anterior. Nenhuma guarda de
     # mount/swap pega um PV/container aberto mas nao montado — morre com
     # instrucao em vez de zapar por cima.
-    if lsblk -nro TYPE "$TARGET_DISK" | grep -Eq '^(lvm|crypt|raid[0-9]*|dm|mpath)$'; then
-        die "particoes de $TARGET_DISK tem holders ativos (LVM/LUKS/RAID — veja 'lsblk $TARGET_DISK') — desative-os antes de reparticionar (vgchange -an / cryptsetup close / mdadm --stop) e re-execute"
+    # Allowlist em vez de denylist: um disco alvo saudavel so pode reportar
+    # 'disk' (ele mesmo) e 'part'. QUALQUER outro TYPE e holder — inclusive as
+    # personalidades MD nao-numericas (linear/multipath/faulty) que uma regex
+    # 'raid[0-9]*' nao pega. Fail-closed: TYPE desconhecido aborta em vez de
+    # passar. Confirmado no hardware alvo que a NVMe reporta 'disk'+'part'.
+    local bad_types
+    bad_types="$(lsblk -nro TYPE "$TARGET_DISK" 2>/dev/null | grep -vE '^(disk|part)$' | sort -u | paste -sd, - || true)"
+    if [[ -n "$bad_types" ]]; then
+        die "particoes de $TARGET_DISK tem holders ativos ou tipo inesperado ('$bad_types' — veja 'lsblk $TARGET_DISK') — desative-os antes de reparticionar (vgchange -an / cryptsetup close / mdadm --stop) e re-execute"
     fi
+
+    # Complemento independente de nomenclatura: o kernel lista em
+    # /sys/class/block/<part>/holders/ qualquer device empilhado sobre a
+    # particao, exista ou nao um TYPE correspondente no lsblk.
+    local sysdev holder
+    for sysdev in /sys/block/"$(basename "$TARGET_DISK")"/*/holders/*; do
+        [[ -e "$sysdev" ]] || continue
+        holder="$(basename "$sysdev")"
+        die "a particao $(basename "$(dirname "$(dirname "$sysdev")")") de $TARGET_DISK tem o holder ativo '$holder' (/sys/.../holders) — desative-o antes de reparticionar (vgchange -an / cryptsetup close / mdadm --stop) e re-execute"
+    done
 
     # Zera a tabela de particoes (GPT + MBR protetivo) e cria o layout novo
     # numa unica chamada: type GUIDs (-t) e PARTLABELs (-c) exatos.
@@ -292,14 +369,23 @@ do_mkfs_root() {
 # ---------------------------------------------------------------------------
 
 probe_mount() {
+    # Um probe nunca pode ser fatal nem ter efeito colateral (contrato do
+    # run_step), entao aqui o realpath que falha NAO chama die: resolve-se em
+    # variavel e, se vier vazio, o probe reporta "nao feito" (return 1) — o
+    # do_mount idempotente roda e as guardas fatais ficam no caminho destrutivo.
+    local rp_root rp_efi rp_swap
+    rp_root="$(realpath "$ROOT_PART" 2>/dev/null)" || return 1
+    rp_efi="$(realpath "$EFI_PART" 2>/dev/null)"   || return 1
+    rp_swap="$(realpath "$SWAP_PART" 2>/dev/null)" || return 1
+    [[ -n "$rp_root" && -n "$rp_efi" && -n "$rp_swap" ]] || return 1
     # root montada em $TARGET_ROOT e vinda da particao certa?
     mountpoint -q "$TARGET_ROOT" || return 1
-    [[ "$(findmnt -rno SOURCE "$TARGET_ROOT" 2>/dev/null)" == "$(realpath "$ROOT_PART")" ]] || return 1
+    [[ "$(findmnt -rno SOURCE "$TARGET_ROOT" 2>/dev/null)" == "$rp_root" ]] || return 1
     # ESP montada em $TARGET_ROOT/efi e vinda da particao certa?
     mountpoint -q "$TARGET_ROOT/efi" || return 1
-    [[ "$(findmnt -rno SOURCE "$TARGET_ROOT/efi" 2>/dev/null)" == "$(realpath "$EFI_PART")" ]] || return 1
+    [[ "$(findmnt -rno SOURCE "$TARGET_ROOT/efi" 2>/dev/null)" == "$rp_efi" ]] || return 1
     # swap ativo?
-    grep -q "^$(realpath "$SWAP_PART") " /proc/swaps
+    grep -q "^${rp_swap} " /proc/swaps
 }
 
 do_mount() {
@@ -311,6 +397,11 @@ do_mount() {
 # Execucao
 # ---------------------------------------------------------------------------
 
+# As 4 sub-etapas abaixo do mount sao as unicas que esta execucao pode gravar
+# antes do 00-mount — a lista e explicita de proposito (ver o descarte da
+# arvore fantasma logo adiante).
+readonly PRE_MOUNT_STEPS=(00-gpt 00-mkfs-efi 00-mkfs-swap 00-mkfs-root)
+
 run_step "00-gpt"       probe_gpt       do_gpt
 run_step "00-mkfs-efi"  probe_mkfs_efi  do_mkfs_efi
 run_step "00-mkfs-swap" probe_mkfs_swap do_mkfs_swap
@@ -320,11 +411,23 @@ run_step "00-mkfs-root" probe_mkfs_root do_mkfs_root
 # desmontado: state_dir aponta para dentro do alvo, entao os markers cairam no
 # tmpfs do live ISO, embaixo do mountpoint — sombreados assim que o 00-mount
 # montar a raiz real por cima (e enganosos se o alvo for desmontado depois).
-# Descarta a arvore fantasma; os markers sao regravados apos o mount, ja no
-# filesystem alvo. Perder marker aqui nunca re-executa nada destrutivo: os
-# probes funcionais sao a autoridade.
+#
+# Descarta APENAS as 4 entradas que ESTA execucao pode ter escrito, nunca a
+# arvore inteira: um 'rm -rf "$(state_dir)"' apagaria state legitimo
+# preexistente de outras etapas quando o alvo esta desmontado por qualquer
+# motivo — o flavor do 01, o hash do fragmento do 04-kernel-build e a versao
+# do 04-nvidia (que NAO tem fallback e reinstalaria o driver do zero).
+# Perder um destes 4 markers nunca re-executa nada destrutivo: os probes
+# funcionais sao a autoridade e curto-circuitam sem tocar no disco.
 if ! mountpoint -q "$TARGET_ROOT"; then
-    rm -rf "$(state_dir)"
+    _phantom_dir="$(state_dir)"
+    for _step in "${PRE_MOUNT_STEPS[@]}"; do
+        rm -f "$_phantom_dir/$_step"
+    done
+    # remove o diretorio so se ficou vazio (nunca -r): se sobrou state de
+    # outra etapa embaixo do mountpoint, ele nao e nosso para apagar.
+    rmdir "$_phantom_dir" 2>/dev/null || true
+    unset _phantom_dir _step
 fi
 
 run_step "00-mount"     probe_mount     do_mount
@@ -332,10 +435,32 @@ run_step "00-mount"     probe_mount     do_mount
 # Regrava no filesystem alvo (agora montado) os markers das sub-etapas que
 # rodaram antes do mount, honrando o contrato do state_dir de lib.sh (o state
 # vive NO ALVO e sobrevive as duas fases e a reboot do live ISO).
-for _step in 00-gpt 00-mkfs-efi 00-mkfs-swap 00-mkfs-root; do
+#
+# CONSULTA O PROBE antes de gravar: o loop antigo perguntava so "o marker
+# existe?" e, como o descarte da arvore fantasma acabara de apaga-lo, gravava os
+# 4 como feitos SEM consultar o probe — o marker virava prova, o oposto do
+# invariante "o probe e a autoridade".
+#
+# Nao se usa run_step aqui de proposito: o alvo JA ESTA MONTADO neste ponto e o
+# run_step, diante de um probe negativo, chamaria o do_fn — ou seja, um
+# sgdisk --zap-all / mkfs num disco montado. As 4 sub-etapas acabaram de ser
+# verificadas pelo run_step la em cima (que re-probea apos o do_fn e morre se
+# falhar), entao um probe negativo AGORA nao e trabalho pendente: e o disco
+# mudando por baixo do script (device stale, mount da particao errada). O unico
+# desfecho seguro e morrer — nunca re-executar destruicao, nunca mentir no marker.
+for _step in "${PRE_MOUNT_STEPS[@]}"; do
+    case "$_step" in
+        00-gpt)       _probe=probe_gpt       ;;
+        00-mkfs-efi)  _probe=probe_mkfs_efi  ;;
+        00-mkfs-swap) _probe=probe_mkfs_swap ;;
+        00-mkfs-root) _probe=probe_mkfs_root ;;
+        *)            die "sub-etapa pre-mount '$_step' sem probe associado (bug do script)" ;;
+    esac
+    "$_probe" \
+        || die "[$_step] o probe reporta nao-feito DEPOIS do mount, mas a sub-etapa concluiu antes dele — estado inconsistente (o disco mudou por baixo do script?); nao e seguro seguir nem regravar o marker, veja $LOGFILE"
     step_done "$_step" || mark_done "$_step"
 done
-unset _step
+unset _step _probe
 
 # O log deste script comecou em /tmp (alvo ainda nao montado); agora que a
 # raiz esta em $TARGET_ROOT, anexa a copia integral ao filesystem alvo.

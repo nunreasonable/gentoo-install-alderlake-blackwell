@@ -106,19 +106,57 @@ find_locale_target() {
 #           + "Optional: Updating the Gentoo ebuild repository"
 # ---------------------------------------------------------------------------
 
-# Probe: o repositorio ::gentoo esta populado (repo_name + timestamp do
-# snapshot). Uma vez populado, re-sincronizar a cada re-execucao seria lento
-# e desnecessario — quem quiser forcar usa `emerge --sync` na mao.
+# Sentinela de sync EM ANDAMENTO: criada antes do emerge-webrsync e removida
+# so apos o `emerge --sync` concluir. Mesmo padrao do EXTRACT_STARTED no 01, e
+# pela mesma razao: os dois arquivos que o probe checa aparecem CEDO na
+# extracao do snapshot, entao Ctrl-C/queda/disco cheio no meio deixa uma
+# arvore truncada que satisfaria o probe para sempre — e a falha so apareceria
+# muito depois, em 04/05/06, como "no ebuilds to satisfy".
+# Vive fora do state dir de proposito: sobrevive a ./install.sh --reset, entao
+# a evidencia de sync interrompido nao se perde junto com os markers.
+SYNC_STARTED="/var/tmp/gentoo-install/sync-started"
+
+# Categorias que as etapas seguintes consomem. Se qualquer uma faltar, a
+# arvore esta truncada, por mais que repo_name/timestamp.chk existam.
+SYNC_REQUIRED_PKGS=(
+    "sys-kernel/gentoo-sources"      # 04-kernel
+    "sys-boot/grub"                  # 05-bootloader
+    "x11-drivers/nvidia-drivers"     # 04-nvidia
+)
+
+# Probe: o repositorio ::gentoo esta populado E completo. Uma vez populado,
+# re-sincronizar a cada re-execucao seria lento e desnecessario — quem quiser
+# forcar usa `emerge --sync` na mao.
 probe_sync() {
+    local pkg
+    # Evidencia de sync INTERROMPIDO -> refaz (webrsync+sync sao incrementais
+    # e nao-destrutivos; o pior caso de refazer e tempo, nunca perda de arvore).
+    [[ -e "$SYNC_STARTED" ]] && return 1
     [[ -f "$GENTOO_REPO/profiles/repo_name" \
-       && -f "$GENTOO_REPO/metadata/timestamp.chk" ]]
+       && -f "$GENTOO_REPO/metadata/timestamp.chk" ]] || return 1
+    # Arvore truncada satisfaz os dois arquivos acima mas nao tem as categorias
+    # de que 04/05/06 dependem — exige um ebuild real em cada uma delas.
+    for pkg in "${SYNC_REQUIRED_PKGS[@]}"; do
+        compgen -G "$GENTOO_REPO/$pkg/*.ebuild" >/dev/null || return 1
+    done
+    return 0
 }
 
 do_sync() {
+    local stamp
+    mkdir -p "$(dirname "$SYNC_STARTED")"
+    # Sentinela ANTES do webrsync: se o sync for interrompido, o proximo run a
+    # encontra e refaz em vez de aceitar a arvore parcial.
+    : > "$SYNC_STARTED"
     # webrsync baixa o snapshot diario assinado (nao depende de rsync liberado
     # na rede); o --sync em seguida traz o delta ate o estado corrente.
     emerge-webrsync
     emerge --sync --quiet
+    rm -f "$SYNC_STARTED"
+    # Marker com valor: registra o timestamp.chk do snapshot sincronizado, para
+    # o log identificar QUAL arvore esta instalada (diagnostico de 04/05/06).
+    stamp="$(cat "$GENTOO_REPO/metadata/timestamp.chk" 2>/dev/null || true)"
+    mark_done 03-sync "${stamp:-done}"
 }
 
 run_step 03-sync probe_sync do_sync
@@ -131,9 +169,21 @@ run_step 03-sync probe_sync do_sync
 # ---------------------------------------------------------------------------
 
 report_news_items() {
-    local count
-    count="$(eselect news count new 2>/dev/null)" || count=0
-    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    local count rc
+    # Tres estados DISTINTOS, nunca colapsados: (a) consultei e ha N>0,
+    # (b) consultei e ha zero, (c) NAO consegui consultar. Sem 2>/dev/null: o
+    # motivo da falha precisa ir para o log. Sem `|| count=0`: tratar falha de
+    # consulta como "zero news" imprimiria uma afirmacao positiva e FALSA.
+    count="$(eselect news count new 2>&1)" && rc=0 || rc=$?
+    if (( rc != 0 )); then
+        log_warn "nao foi possivel consultar os news items do Portage (eselect news count new saiu com $rc): ${count:-sem saida}"
+        log_warn "leia manualmente com 'eselect news list' — news podem trazer migracoes obrigatorias que afetam 04/05/06"
+        return 0
+    fi
+    if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+        log_warn "eselect news count new devolveu saida inesperada ('$count') — nao da para afirmar que nao ha news; leia manualmente com 'eselect news list'"
+        return 0
+    fi
     if (( count > 0 )); then
         log_warn "$count news item(s) do Portage nao lidos — conteudo registrado no log abaixo"
         eselect news list || true
@@ -298,10 +348,21 @@ run_step 03-fstab probe_fstab do_fstab
 # (conflito, pacote mascarado) NAO pode virar "ja feito" — probe falha,
 # do_world_update roda e o errexit expoe o erro real no log.
 probe_world_update() {
-    local out
-    out="$(emerge --pretend --quiet --update --deep --newuse @world 2>&1)" \
+    local out count
+    # stderr NAO entra em $out: avisos do Portage no stderr poluiriam a
+    # contagem. O exit code continua sendo checado separado da contagem.
+    out="$(emerge --pretend --quiet --update --deep --newuse @world 2>/dev/null)" \
         || return 1
-    [[ "$(grep -c '^\[' <<<"$out" || true)" -eq 0 ]]
+    # SEM ancora '^': a etiqueta vem indentada em varios formatos de saida do
+    # Portage, e uma unica coluna de deslocamento derrubava a contagem de 1
+    # para 0 — o probe dizia "ja atualizado" e o emerge nunca rodava.
+    count="$(grep -cE '\[(ebuild|binary|nomerge|blocks|uninstall)' <<<"$out" || true)"
+    (( count == 0 )) || return 1
+    # Fail-safe: contagem zero mas a saida menciona ebuild = formato que este
+    # probe nao entende. Trata como NAO-feito (roda o emerge, que e idempotente)
+    # em vez de arriscar pular a atualizacao pedida por UPDATE_WORLD=yes.
+    grep -qi 'ebuild' <<<"$out" && return 1
+    return 0
 }
 
 do_world_update() {

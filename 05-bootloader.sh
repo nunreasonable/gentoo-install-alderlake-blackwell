@@ -42,8 +42,22 @@ current_kernel_release() {
         cat /usr/src/linux/include/config/kernel.release
         return 0
     fi
-    local newest
-    newest="$(ls -1 /boot/vmlinuz-* 2>/dev/null | grep -v '\.old$' | sed 's|.*/vmlinuz-||' | sort -V | tail -n1)"
+    # Glob + loop em vez de `ls | grep` (SC2010): o shell ja entrega os nomes
+    # um a um, sem passar por parsing de saida de ls.
+    local f rel newest
+    shopt -s nullglob
+    local candidates=()
+    for f in /boot/vmlinuz-*; do
+        [[ -f "$f" ]] || continue
+        rel="${f##*/vmlinuz-}"
+        # ignora os backups vmlinuz-*.old do `make install` (ver comentario
+        # acima): sort -V ordenaria '<rel>.old' DEPOIS de '<rel>'
+        [[ "$rel" == *.old ]] && continue
+        candidates+=("$rel")
+    done
+    shopt -u nullglob
+    [[ "${#candidates[@]}" -gt 0 ]] || return 1
+    newest="$(printf '%s\n' "${candidates[@]}" | sort -V | tail -n1)"
     [[ -n "$newest" ]] || return 1
     printf '%s\n' "$newest"
 }
@@ -99,7 +113,13 @@ do_grub_emerge() {
 # 05-default-grub — escreve /etc/default/grub
 # Handbook: "Optional: Setting kernel boot options" — parametros de kernel
 # vao em GRUB_CMDLINE_LINUX no /etc/default/grub.
-# root=PARTUUID e obrigatorio aqui (sem initramfs, ver cabecalho do script);
+# O root= NAO vai no GRUB_CMDLINE_LINUX: com GRUB_DISABLE_LINUX_UUID=true e
+# GRUB_DISABLE_LINUX_PARTUUID=false o proprio 10_linux upstream emite
+# root=PARTUUID=<partuuid da raiz> em cada menuentry, lendo o valor do disco
+# real. Colocar um segundo root= aqui produzia DOIS root= por menuentry (o
+# kernel obedece ao ultimo, entao funcionava por acidente) e transformava o
+# /etc/default/grub numa segunda fonte de verdade que podia divergir do disco
+# apos um reparticionamento — exatamente o que o invariante 1 proibe.
 # intel_iommu=on liga a IOMMU (o kernel do 04 tem INTEL_IOMMU=y mas
 # INTEL_IOMMU_DEFAULT_ON desligado — a decisao fica na cmdline).
 # ---------------------------------------------------------------------------
@@ -107,31 +127,32 @@ do_grub_emerge() {
 probe_default_grub() {
     [[ -f /etc/default/grub ]] || return 1
     grep -qx 'GRUB_DISABLE_LINUX_UUID=true' /etc/default/grub || return 1
-    # O PARTUUID gravado precisa ser o PARTUUID REAL atual da raiz: um
-    # reparticionamento (novo PARTUUID) invalida o arquivo e forca reescrita.
-    grep -qF "root=PARTUUID=$ROOT_PARTUUID" /etc/default/grub || return 1
+    grep -qx 'GRUB_DISABLE_LINUX_PARTUUID=false' /etc/default/grub || return 1
+    # Nenhum root= no arquivo: quem emite o root= e o 10_linux, a partir do
+    # estado real do disco. Um root= aqui seria uma segunda fonte de verdade.
+    ! grep -q 'root=' /etc/default/grub || return 1
     grep -qF 'intel_iommu=on' /etc/default/grub
 }
 
 do_default_grub() {
     cat > /etc/default/grub <<EOF
 # /etc/default/grub — gerado por 05-bootloader.sh (instalacao automatizada).
-# Reescrito automaticamente se o root=PARTUUID divergir do estado real do disco.
 
 GRUB_DISTRIBUTOR="Gentoo"
 GRUB_TIMEOUT=5
 
 # Sem initramfs o kernel nao resolve root=UUID= (UUID de filesystem e coisa de
-# userspace); root=PARTUUID= e resolvido pelo proprio kernel via GPT.
+# userspace); root=PARTUUID= e resolvido pelo proprio kernel via GPT. Com estes
+# dois valores o 10_linux emite root=PARTUUID= sozinho, lendo o PARTUUID do
+# disco real — por isso NAO repetimos root= no GRUB_CMDLINE_LINUX abaixo.
 GRUB_DISABLE_LINUX_UUID=true
 GRUB_DISABLE_LINUX_PARTUUID=false
 
-# root=       : raiz por PARTUUID (particao 3 de $TARGET_DISK)
 # intel_iommu : liga a IOMMU (VT-d) — o kernel foi buildado com
 #               INTEL_IOMMU_DEFAULT_ON desligado de proposito
-GRUB_CMDLINE_LINUX="root=PARTUUID=$ROOT_PARTUUID intel_iommu=on"
+GRUB_CMDLINE_LINUX="intel_iommu=on"
 EOF
-    log_info "/etc/default/grub escrito (root=PARTUUID=$ROOT_PARTUUID)"
+    log_info "/etc/default/grub escrito (root=PARTUUID emitido pelo 10_linux)"
 }
 
 # ---------------------------------------------------------------------------
@@ -146,14 +167,26 @@ EOF
 # depois da copia mas antes de registrar a entrada de boot.
 # ---------------------------------------------------------------------------
 
+# _efi_fallback_present: verdadeiro se existe EFI/BOOT/BOOTX64.EFI na ESP
+# (FAT e case-insensitive, mas o -ipath cobre variacoes de caixa por garantia).
+_efi_fallback_present() {
+    find /efi/EFI -maxdepth 2 -type f -ipath '*/boot/bootx64.efi' 2>/dev/null | grep -q .
+}
+
 probe_grub_install() {
     if [[ "$GRUB_REMOVABLE" == "yes" ]]; then
-        # --removable instala no caminho de fallback (FAT e case-insensitive,
-        # mas o find -ipath cobre variacoes de caixa por garantia)
-        find /efi/EFI -maxdepth 2 -type f -ipath '*/boot/bootx64.efi' 2>/dev/null | grep -q .
+        # --removable instala SO no caminho de fallback e nao toca na NVRAM
+        _efi_fallback_present
     else
         # Instalacao padrao: EFI/<bootloader-id>/grubx64.efi na ESP...
         find /efi/EFI -maxdepth 2 -type f -iname 'grubx64.efi' 2>/dev/null | grep -q . || return 1
+        # ...E a copia de fallback EFI/BOOT/BOOTX64.EFI que do_grub_install
+        # grava incondicionalmente na segunda invocacao. Sem esta checagem a
+        # rede de seguranca do firmware ASUS (que tem historico de perder ou
+        # reordenar entradas de NVRAM) ficava sem probe nenhum: se a segunda
+        # invocacao falhasse, o probe passava e a maquina ficava dependente
+        # exclusivamente da entrada NVRAM.
+        _efi_fallback_present || return 1
         # ...E a entrada de boot na NVRAM. O grub-install copia o grubx64.efi
         # ANTES de registrar a entrada via efivarfs; se ele falhar no meio
         # (ex.: live ISO bootado em CSM/legacy, efivarfs inacessivel no
@@ -200,12 +233,74 @@ do_grub_install() {
 probe_grub_cfg() {
     [[ -s /boot/grub/grub.cfg ]] || return 1
     grep -qF "vmlinuz-$KERNEL_RELEASE" /boot/grub/grub.cfg || return 1
-    grep -qF "root=PARTUUID=$ROOT_PARTUUID" /boot/grub/grub.cfg
+    # Sintaxe integra: um grub.cfg truncado (ENOSPC, queda no meio da escrita)
+    # ainda contem a linha `linux ...` com as substrings acima, porque ela
+    # aparece CEDO, antes do fechamento do menuentry — as checagens de conteudo
+    # sozinhas nao distinguem arquivo completo de arquivo cortado. O
+    # grub-script-check vem no mesmo pacote sys-boot/grub e recusa bloco nao
+    # fechado. Se o binario nao existir, reportamos nao-feito (fail-closed).
+    command -v grub-script-check > /dev/null 2>&1 || return 1
+    grub-script-check /boot/grub/grub.cfg > /dev/null 2>&1 || return 1
+    # Exatamente UM root= na linha do menuentry default (ver comentario do
+    # probe_default_grub): duas ocorrencias significam que alguem reintroduziu
+    # root= no GRUB_CMDLINE_LINUX e o 10_linux acrescentou o dele.
+    grub_cfg_root_ok /boot/grub/grub.cfg
+}
+
+# grub_cfg_root_ok <arquivo>: valida as linhas `linux ...` do grub.cfg. Cada
+# uma precisa ter EXATAMENTE uma ocorrencia de root= e ela precisa ser o
+# PARTUUID real da raiz. Sem initramfs um root= errado (ou um segundo root=
+# divergente vencendo por ser o ultimo) e maquina que nao boota, e o grep -qF
+# de substring do probe antigo casava em qualquer posicao, inclusive num
+# menuentry de outro sistema. Retorna 1 se nao houver nenhuma linha linux.
+grub_cfg_root_ok() {
+    local cfg="$1" line n found=0
+    while IFS= read -r line; do
+        found=1
+        # conta as ocorrencias de root= nesta linha
+        n="$(grep -o -- 'root=' <<< "$line" | grep -c .)" || n=0
+        [[ "$n" -eq 1 ]] || return 1
+        grep -qE -- "(^|[[:blank:]])root=PARTUUID=$ROOT_PARTUUID([[:blank:]]|\$)" <<< "$line" || return 1
+    done < <(grep -E '^[[:blank:]]*linux[[:blank:]]' "$cfg")
+    [[ "$found" -eq 1 ]]
+}
+
+# _grub_cfg_fail <tmp> <msg>: remove o temporario e morre. Existe porque o
+# die() encerra o processo e um `trap ... RETURN` nao seria executado.
+_grub_cfg_fail() {
+    local tmp="$1"; shift
+    rm -f "$tmp"
+    die "$@"
 }
 
 do_grub_cfg() {
     mkdir -p /boot/grub
-    grub-mkconfig -o /boot/grub/grub.cfg
+    # Gera para um temporario NO MESMO filesystem (/boot/grub) e so publica
+    # depois de validar: o `grub-mkconfig -o` escreve DIRETO no destino final,
+    # entao um ENOSPC no meio deixaria o grub.cfg truncado no lugar do bom e o
+    # GRUB cairia no rescue no proximo boot. Invariante 6: verificar ANTES de
+    # publicar. mv no mesmo filesystem e rename(2) — atomico.
+    # grub-script-check checado ANTES de gerar: se faltar, nao ha por que
+    # gastar o grub-mkconfig — e nao publicamos cfg nao validado (fail-closed).
+    command -v grub-script-check > /dev/null 2>&1 \
+        || die "grub-script-check nao encontrado (deveria vir com sys-boot/grub) — recusando publicar grub.cfg nao validado"
+    local tmp
+    tmp="$(mktemp /boot/grub/grub.cfg.new.XXXXXX)" \
+        || die "nao foi possivel criar temporario em /boot/grub (disco cheio?)"
+    # Cada saida de erro limpa o temporario explicitamente. NAO usar
+    # `trap ... RETURN`: o die() faz exit e o trap RETURN nao dispara nesse
+    # caminho, deixando grub.cfg.new.* acumulando na /boot a cada tentativa.
+    grub-mkconfig -o "$tmp" \
+        || _grub_cfg_fail "$tmp" "grub-mkconfig falhou — grub.cfg anterior preservado intacto"
+    [[ -s "$tmp" ]] \
+        || _grub_cfg_fail "$tmp" "grub-mkconfig gerou arquivo vazio — grub.cfg anterior preservado intacto"
+    grub-script-check "$tmp" \
+        || _grub_cfg_fail "$tmp" "grub.cfg gerado tem sintaxe invalida (truncado por disco cheio?) — grub.cfg anterior preservado intacto"
+    # mktemp cria 0600; o grub-mkconfig -o tambem gera 0600 no destino final,
+    # entao nao ha modo a ajustar antes de publicar.
+    mv -f "$tmp" /boot/grub/grub.cfg \
+        || _grub_cfg_fail "$tmp" "falha ao publicar /boot/grub/grub.cfg"
+    log_info "/boot/grub/grub.cfg gerado, validado com grub-script-check e publicado"
 }
 
 # ---------------------------------------------------------------------------

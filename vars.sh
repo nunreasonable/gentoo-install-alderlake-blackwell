@@ -139,3 +139,27 @@
 
 # yes = roda `emerge -uDN @world` na etapa 03 (demora; opcional na 1a instalacao).
 : "${UPDATE_WORLD:=no}"
+
+# ---------------------------------------------------------------------------
+# Preflight de hardware
+# ---------------------------------------------------------------------------
+#
+# Este instalador e hardware-targeted (i5-12600K + RTX 5060 Ti + B760M-E D4 +
+# 32 GiB + NVMe + UEFI). Antes de tocar no disco, preflight_hardware imprime
+# uma tabela com um veredicto por item e ABORTA se algo for comprovadamente
+# incompativel. Sao FATAIS apenas tres itens, os unicos confiaveis de detectar
+# E realmente fatais: firmware sem UEFI, CPU nao-Intel e disco alvo ausente
+# ou que nao e um disco inteiro. Falta de GPU NVIDIA NAO e fatal (a VM valida
+# o resto e o 04 decide sozinho via NVIDIA_MODE), e nenhum match exato de
+# modelo (placa, GPU, VRAM) e obrigatorio — esses sao sempre AVISO.
+
+# yes = PULA o preflight inteiro, INCLUSIVE as tres verificacoes fatais.
+# Escape hatch para hardware novo que o instalador ainda nao conhece: voce
+# assume o risco de descobrir a incompatibilidade com o disco ja apagado.
+: "${SKIP_HW_PREFLIGHT:=no}"
+
+# yes = modo estrito: promove todo AVISO a FALHA, entao QUALQUER divergencia
+# do hardware alvo aborta (placa diferente, GPU diferente, menos RAM...).
+# Util em CI ou antes de uma instalacao de producao, para garantir que voce
+# esta mesmo na maquina alvo. Com "no" (default) os avisos so sao logados.
+: "${HW_PREFLIGHT_STRICT:=no}"

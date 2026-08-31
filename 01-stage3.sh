@@ -110,15 +110,35 @@ load_stage3_info() {
 # ===========================================================================
 
 # Data de referencia embutida (geracao destes scripts): o relogio nunca pode
-# estar ANTES dela. Sem limite superior — instalar anos depois e legitimo (o
-# proprio gpg acusa se a chave releng expirar).
+# estar ANTES dela.
 CLOCK_REF_EPOCH=1788048000   # date -u -d '2026-08-30 00:00:00 UTC' +%s
 CLOCK_REF_HUMAN="2026-08-30"
+
+# Limite SUPERIOR: data de expiracao da chave releng (vars.sh:81). Um RTC
+# corrompido para o futuro passava no piso e o gpg rejeitava a chave como
+# "expirada" — exatamente o erro criptico que esta funcao existe para evitar.
+# Instalar legitimamente depois desta data e possivel (a chave releng e
+# rotacionada): por isso este limite so AVISA, apontando o relogio como causa
+# provavel ANTES da mensagem do gpg. Atualize junto com RELENG_KEY_FPR.
+CLOCK_KEY_EXPIRY_EPOCH=1846022400   # date -u -d '2028-07-01 00:00:00 UTC' +%s
+CLOCK_KEY_EXPIRY_HUMAN="2028-07-01"
+
+# _check_clock_upper: relogio depois da expiracao da chave releng. Nao e fatal
+# (ver acima), mas o aviso precisa vir antes de qualquer chamada ao gpg.
+_check_clock_upper() {
+    local now
+    now="$(date +%s)"
+    (( now > CLOCK_KEY_EXPIRY_EPOCH )) || return 0
+    log_warn "relogio do sistema marca $(date -u '+%Y-%m-%d %H:%M:%S UTC'), DEPOIS da expiracao ($CLOCK_KEY_EXPIRY_HUMAN) da chave releng RELENG_KEY_FPR=$RELENG_KEY_FPR"
+    log_warn "se o gpg reclamar de chave/assinatura 'expirada' a seguir, a causa provavel e o relogio adiantado (bateria CMOS fraca / RTC corrompido) — confira com 'date -u' e acerte com 'chronyd -q'"
+    log_warn "se a data estiver realmente correta, a chave releng foi rotacionada: atualize RELENG_KEY_FPR (https://www.gentoo.org/downloads/signatures/) e CLOCK_KEY_EXPIRY_EPOCH"
+}
 
 check_clock() {
     local now
     now="$(date +%s)"
     if (( now >= CLOCK_REF_EPOCH )); then
+        _check_clock_upper
         return 0
     fi
     log_warn "relogio do sistema atrasado: agora e $(date -u '+%Y-%m-%d %H:%M:%S UTC'), anterior a referencia $CLOCK_REF_HUMAN"
@@ -134,6 +154,8 @@ check_clock() {
     now="$(date +%s)"
     (( now >= CLOCK_REF_EPOCH )) \
         || die "relogio do sistema esta antes de $CLOCK_REF_HUMAN — TLS e verificacao GPG do stage3 falhariam. Acerte a hora (ex.: 'chronyd -q' com rede, ou 'date MMDDhhmmYYYY' como no Handbook) e rode o script de novo"
+    # O sync pode ter corrigido o piso mas deixado o relogio acima da expiracao.
+    _check_clock_upper
 }
 
 # ===========================================================================
@@ -142,13 +164,21 @@ check_clock() {
 # esperado vem de https://www.gentoo.org/downloads/signatures/).
 # ===========================================================================
 
-# _key_fingerprint_ok: a chave com o fingerprint EXATO esta no keyring?
-# Compara os campos "fpr" (com-colons) contra RELENG_KEY_FPR, nao confia
-# apenas no exit code do --list-keys.
+# _key_fingerprint_ok: o keyring contem EXATAMENTE UMA chave primaria e ela e
+# RELENG_KEY_FPR? Presenca nao basta: todo `gpg --verify` daqui pra frente
+# aceita QUALQUER chave do keyring, entao a propriedade que precisamos e
+# exclusividade. Lista o keyring INTEIRO (sem filtrar por fingerprint, senao a
+# consulta esconderia justamente as chaves extras), conta os registros "pub" e
+# casa o "fpr" que segue cada "pub" (o 1o fpr apos um pub e o da primaria; os
+# seguintes sao de subchaves). Nao confia no exit code do --list-keys.
+# Fail-closed: keyring vazio/ilegivel => nenhum pub => retorna 1.
 _key_fingerprint_ok() {
-    "${GPG[@]}" --with-colons --list-keys "$RELENG_KEY_FPR" 2>/dev/null \
-        | awk -F: '$1 == "fpr" { print $10 }' \
-        | grep -qix "$RELENG_KEY_FPR"
+    "${GPG[@]}" --with-colons --list-keys 2>/dev/null \
+        | awk -F: -v want="$RELENG_KEY_FPR" '
+            $1 == "pub" { pub++; primary = 1; next }
+            $1 == "fpr" && primary { got = toupper($10); primary = 0 }
+            END { exit !(pub == 1 && got == toupper(want)) }
+        '
 }
 
 probe_gpg_key() {
@@ -156,21 +186,57 @@ probe_gpg_key() {
 }
 
 do_gpg_key() {
+    # Keyring reconstruido do ZERO a cada execucao: sem isto um keyring poluido
+    # (import anterior de arquivo com N chaves) nunca seria descartado, e como o
+    # $GNUPGHOME vive no WORKDIR dentro do alvo — sobrevive a reboot e a
+    # ./install.sh --reset, que so apaga o state dir — o estado sujo se
+    # perpetuaria a cada re-execucao.
+    rm -rf "$GNUPGHOME"
+    mkdir -p "$GNUPGHOME"
+    chmod 700 "$GNUPGHOME"
+
     # 1a opcao: keyserver oficial do Gentoo; fallback: chave embarcada na
     # midia oficial de instalacao (presente no minimal ISO).
     if "${GPG[@]}" --keyserver hkps://keys.gentoo.org --recv-keys "$RELENG_KEY_FPR"; then
         log_info "chave releng importada do keyserver hkps://keys.gentoo.org"
     elif [[ -r /usr/share/openpgp-keys/gentoo-release.asc ]]; then
+        # O .asc da midia pode conter N chaves e o --import aceitaria TODAS,
+        # cada uma virando autoridade valida para o stage3. Import em dois
+        # tempos: keyring temporario descartavel recebe o arquivo inteiro, e de
+        # la exportamos SOMENTE $RELENG_KEY_FPR para o keyring de verificacao —
+        # que assim tem, por construcao, uma unica chave.
         log_warn "keyserver indisponivel — importando fallback /usr/share/openpgp-keys/gentoo-release.asc"
-        "${GPG[@]}" --import /usr/share/openpgp-keys/gentoo-release.asc
+        # Declaracao SEPARADA da atribuicao: `local x="$(cmd)"` retorna o status
+        # do `local` (0) e mascararia a falha do mktemp sob set -e, deixando o
+        # caminho vazio para o rm -rf e o redirect adiante.
+        local tmp_gnupghome tmp_rc=0
+        tmp_gnupghome="$(mktemp -d "$WORKDIR/gnupg-fallback.XXXXXX")"
+        [[ -n "$tmp_gnupghome" && -d "$tmp_gnupghome" ]] \
+            || die "nao consegui criar keyring temporario para o fallback da chave releng"
+        chmod 700 "$tmp_gnupghome"
+        # Subshell: o GNUPGHOME alterado nao vaza para o resto do script.
+        (
+            export GNUPGHOME="$tmp_gnupghome"
+            "${GPG[@]}" --import /usr/share/openpgp-keys/gentoo-release.asc >&2 || exit 1
+            # --export com o fingerprint completo: so a releng sai daqui.
+            "${GPG[@]}" --export "$RELENG_KEY_FPR"
+        ) > "$tmp_gnupghome/releng.gpg" || tmp_rc=$?
+        if (( tmp_rc == 0 )) && [[ -s "$tmp_gnupghome/releng.gpg" ]]; then
+            "${GPG[@]}" --import "$tmp_gnupghome/releng.gpg" || tmp_rc=1
+        else
+            tmp_rc=1
+        fi
+        rm -rf "$tmp_gnupghome"
+        (( tmp_rc == 0 )) \
+            || die "fallback /usr/share/openpgp-keys/gentoo-release.asc nao contem a chave RELENG_KEY_FPR=$RELENG_KEY_FPR (ou o import falhou) — abortando"
     else
         die "nao consegui importar a chave releng: keyserver falhou e o fallback /usr/share/openpgp-keys/gentoo-release.asc nao existe"
     fi
-    # Confere o fingerprint contra RELENG_KEY_FPR; divergencia = keyring
-    # inteiro descartado (nao deixamos chave suspeita para tras).
+    # Confere exclusividade + fingerprint contra RELENG_KEY_FPR; divergencia =
+    # keyring inteiro descartado (nao deixamos chave suspeita para tras).
     if ! _key_fingerprint_ok; then
         rm -rf "$GNUPGHOME"
-        die "fingerprint da chave importada NAO confere com RELENG_KEY_FPR=$RELENG_KEY_FPR — keyring descartado, abortando"
+        die "keyring nao contem EXATAMENTE a chave RELENG_KEY_FPR=$RELENG_KEY_FPR (chave ausente, divergente ou chaves extras importadas) — keyring descartado, abortando"
     fi
 }
 

@@ -40,6 +40,7 @@ ALL_VARS=(
     USERNAME USER_GROUPS ROOT_PASSWORD_HASH USER_PASSWORD_HASH
     ENABLE_SSHD ENABLE_DHCP GRUB_REMOVABLE AUTO_CONFIRM UPDATE_WORLD
     ALLOW_INSTALLED_HOST
+    SKIP_HW_PREFLIGHT HW_PREFLIGHT_STRICT
 )
 
 # ---------------------------------------------------------------------------
@@ -275,14 +276,20 @@ repartition_prep() {
     # o log pode estar dentro do alvo — solta o fd antes de desmontar
     detach_logging_to_tmp
 
-    # desativa qualquer swap residual do disco alvo
-    local dev mnt
-    while read -r dev mnt; do
-        if [[ "$mnt" == "[SWAP]" ]]; then
+    # desativa qualquer swap residual do disco alvo. FONTE DE VERDADE =
+    # /proc/swaps via _swap_is_active, nao a coluna MOUNTPOINT do lsblk (que e
+    # singular e esconde mounts adicionais do mesmo device). Fail-closed: falha
+    # ao enumerar aborta antes de invalidar o layout.
+    local dev target_parts
+    target_parts="$(_target_disk_parts)" \
+        || die "--repartition: nao foi possivel enumerar as particoes de '$TARGET_DISK' (lsblk falhou) — abortando em vez de seguir com swap possivelmente ativa"
+    while read -r dev; do
+        [[ -n "$dev" ]] || continue
+        if _swap_is_active "$dev"; then
             swapoff "$dev"
             log_info "--repartition: swap desativado em $dev"
         fi
-    done < <(lsblk -nrpo NAME,MOUNTPOINT "$TARGET_DISK")
+    done <<< "$target_parts"
 
     # desmonta o alvo inteiro (retry: o tee antigo pode levar um instante para
     # soltar o fd depois do detach_logging_to_tmp)
@@ -314,20 +321,66 @@ repartition_prep() {
 # Preparacao e entrada no chroot (fase live)
 # ---------------------------------------------------------------------------
 
-# copy_scripts_to_target: copia este diretorio inteiro (scripts + lib + vars +
+# copy_scripts_to_target: ESPELHA este diretorio (scripts + lib + vars +
 # kernel-fragment.config) para $TARGET_ROOT/root/gentoo-install/.
+#
+# Espelha, nao mescla: o destino e apagado antes da copia. Com `cp -a` puro um
+# script removido ou renomeado na origem sobrevivia no alvo, ganhava +x pelo
+# glob abaixo e ficava invocavel standalone (invariante 3) — versao velha
+# rodando sobre lib.sh novo. O `.git/` tambem e excluido: e historico do
+# instalador, nao tem funcao no sistema instalado.
 copy_scripts_to_target() {
     local dst="$TARGET_ROOT$TARGET_SCRIPTS_DIR_REL"
     if [[ "$SCRIPT_DIR" == "$dst" ]]; then
         # ja estamos rodando da copia dentro do alvo (re-execucao esquisita
-        # mas valida) — nada a copiar por cima de si mesmo
+        # mas valida) — nada a copiar por cima de si mesmo, e apagar o destino
+        # apagaria o script em execucao
         log_info "scripts ja estao em $dst (rodando da propria copia)"
     else
+        # validacao de seguranca independente antes do rm -rf: $dst tem que ser
+        # o caminho derivado do alvo montado, nunca a raiz nem o proprio
+        # SCRIPT_DIR. Fail-closed.
+        if [[ -z "$TARGET_ROOT" || "$TARGET_ROOT" == "/" ]]; then
+            die "copy_scripts_to_target: TARGET_ROOT invalido ('$TARGET_ROOT') — recusando apagar $dst"
+        fi
+        if [[ "$dst" != "$TARGET_ROOT$TARGET_SCRIPTS_DIR_REL" || "$dst" == "/" ]]; then
+            die "copy_scripts_to_target: destino inesperado ('$dst') — recusando apagar"
+        fi
+        if ! mountpoint -q "$TARGET_ROOT"; then
+            die "copy_scripts_to_target: $TARGET_ROOT nao esta montado — recusando escrever/apagar em $dst"
+        fi
+
+        rm -rf "$dst"
         mkdir -p "$dst"
-        cp -a "$SCRIPT_DIR/." "$dst/"
-        log_info "scripts copiados para $dst"
+        # copia o conteudo item a item para poder pular o .git; `cp -a` sobre
+        # uma lista explicita mantem permissoes/timestamps como antes
+        local item base
+        for item in "$SCRIPT_DIR"/* "$SCRIPT_DIR"/.[!.]*; do
+            [[ -e "$item" ]] || continue          # glob nao-casado
+            base="$(basename "$item")"
+            [[ "$base" == ".git" ]] && continue   # historico nao vai para o alvo
+            cp -a "$item" "$dst/"
+        done
+        log_info "scripts espelhados para $dst (destino recriado; .git excluido)"
     fi
-    chmod +x "$dst"/[0-9][0-9]-*.sh "$dst/install.sh"
+
+    # +x nos scripts de etapa: glob nao-casado viraria padrao literal e o chmod
+    # falharia sob set -e logo antes do chroot, com o alvo montado e mensagem
+    # obscura. Coleta com nullglob e morre com mensagem propria se vazio.
+    local scripts=()
+    local _ng_was_set="no"
+    shopt -q nullglob && _ng_was_set="yes"
+    shopt -s nullglob
+    scripts=("$dst"/[0-9][0-9]-*.sh)
+    [[ "$_ng_was_set" == "yes" ]] || shopt -u nullglob
+
+    if [[ ${#scripts[@]} -eq 0 ]]; then
+        die "nenhum script de etapa (NN-*.sh) encontrado em $dst — a copia para o alvo falhou ou o diretorio de origem ($SCRIPT_DIR) esta incompleto; o chroot nao teria o que executar"
+    fi
+    if [[ ! -f "$dst/install.sh" ]]; then
+        die "install.sh ausente em $dst — a copia para o alvo falhou; o chroot nao teria como se re-invocar"
+    fi
+    chmod +x "${scripts[@]}" "$dst/install.sh"
 }
 
 # write_effective_vars: reescreve o vars.sh COPIADO com os valores efetivos
@@ -351,11 +404,19 @@ write_effective_vars() {
     log_info "vars.sh efetivo gravado em $dst"
 }
 
-# enter_chroot [flags...]: prepara os mounts, copia scripts + vars efetivos,
-# grava a sentinela de fase e entra no chroot re-invocando este script com
-# --chroot (+ flags encaminhadas, ex.: --from 4 / --only 5). Ao voltar com
-# sucesso remove a sentinela; em falha a sentinela FICA (re-execucao retoma).
+# enter_chroot <cobre-fase-inteira: yes|no> [flags...]: prepara os mounts,
+# copia scripts + vars efetivos, grava a sentinela de fase e entra no chroot
+# re-invocando este script com --chroot (+ flags encaminhadas, ex.:
+# --from 4 / --only 5).
+#
+# A sentinela so e removida quando a invocacao COBRE A FASE INTEIRA (ate a 06)
+# E terminou com sucesso. Um `--only 4` roda uma etapa so: mesmo passando, a
+# fase chroot continua incompleta e a sentinela FICA, para o estado no disco
+# nao ficar indistinguivel de um chroot completo. Em falha a sentinela tambem
+# FICA (re-execucao retoma).
 enter_chroot() {
+    local covers_full_phase="$1"
+    shift
     local forward=("$@")
 
     # restaura/garante os mounts do alvo (idempotente; morre com instrucao
@@ -390,9 +451,15 @@ enter_chroot() {
         die "fase chroot falhou — veja os logs em $TARGET_ROOT/var/log/gentoo-install/ e re-execute ./install.sh (retoma da sub-etapa que falhou; a sentinela de fase foi mantida de proposito)"
     fi
 
-    # sucesso: remove a sentinela (o alvo deixa de ser "fase chroot")
-    rm -f "$TARGET_ROOT$CHROOT_SENTINEL"
-    log_info "fase chroot concluida com sucesso; sentinela removida"
+    # sucesso: so encerra a fase (removendo a sentinela) se esta invocacao
+    # cobriu a fase inteira. Caminho parcial mantem a sentinela — fail-closed:
+    # na duvida o alvo continua marcado como "fase chroot em andamento".
+    if [[ "$covers_full_phase" == "yes" ]]; then
+        rm -f "$TARGET_ROOT$CHROOT_SENTINEL"
+        log_info "fase chroot concluida com sucesso; sentinela removida"
+    else
+        log_warn "fase chroot ainda incompleta (rodou so as etapas pedidas: ${forward[*]}) — sentinela MANTIDA; rode ./install.sh sem --from/--only para completar 03-06"
+    fi
 }
 
 # cleanup_stage3_workdir: Handbook "Removing tarballs" (Finalizing) — apos a
@@ -435,6 +502,21 @@ print_final_instructions() {
 main_live() {
     compute_partitions
 
+    # Preflight de hardware: roda DEPOIS de validate_vars (que canonicaliza
+    # TARGET_DISK/TARGET_ROOT, dos quais o preflight depende) e ANTES de
+    # QUALQUER coisa destrutiva — antes do do_reset, do repartition_prep e da
+    # etapa 00. E aqui que o instalador descobre hardware incompativel
+    # enquanto abortar ainda e gratuito: o disco continua intacto.
+    #
+    # Isto NAO substitui a validacao de disco do 00, que revalida o estado do
+    # disco alvo imediatamente antes de particionar (o estado pode mudar entre
+    # este ponto e o sgdisk). Idempotente: confirm_destruction chama de novo e
+    # a segunda chamada e no-op.
+    #
+    # Nao esta no topo do arquivo de proposito: a fase chroot roda com o disco
+    # ja particionado e nao tem o que confrontar (nem lspci garantido).
+    preflight_hardware
+
     if [[ "$DO_RESET" == "yes" ]]; then
         do_reset
     fi
@@ -447,7 +529,8 @@ main_live() {
         if [[ "$ONLY_STEP" -le 2 ]]; then
             run_script "$(step_script "$ONLY_STEP")"
         else
-            enter_chroot --only "$ONLY_STEP"
+            # --only nunca cobre a fase inteira: a sentinela fica
+            enter_chroot no --only "$ONLY_STEP"
         fi
         attach_log_to_target
         log_info "--only $ONLY_STEP concluido. O alvo continua montado em $TARGET_ROOT; nada foi desmontado."
@@ -466,7 +549,9 @@ main_live() {
     if [[ "$start" -ge 3 ]]; then
         fwd=(--from "$start")
     fi
-    enter_chroot "${fwd[@]}"
+    # o caminho sequencial sempre vai ate a 06 (com ou sem --from): cobre a
+    # fase inteira, entao a sentinela pode ser removida no sucesso
+    enter_chroot yes "${fwd[@]}"
 
     # fase chroot concluida com sucesso — limpeza do Handbook "Removing tarballs"
     cleanup_stage3_workdir

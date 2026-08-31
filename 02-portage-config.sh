@@ -42,6 +42,10 @@ PORTAGE_DIR="$TARGET_ROOT/etc/portage"
 
 # Header presente em todo arquivo gerado por este script (o probe exige ele).
 GENERATED_HEADER="# GERADO-POR: gentoo-install/02-portage-config.sh — nao edite a mao; edite vars.sh e re-rode o script"
+# Marcador de FIM, ULTIMA linha de todo arquivo gerado. O header sozinho nao
+# detecta truncamento (e a 1a linha emitida, sobrevive a qualquer corte); o
+# trailer so existe se o gerador chegou ao fim E a escrita completou.
+GENERATED_TRAILER="# FIM-GERADO — se esta linha faltar, o arquivo foi truncado; re-rode 02-portage-config.sh"
 
 # ---------------------------------------------------------------------------
 # Geradores de conteudo (deterministicos — o probe hasheia a saida deles)
@@ -52,23 +56,67 @@ _sha256_stdin() {
     sha256sum | awk '{print $1}'
 }
 
+# _nvidia_on_bus: ha GPU NVIDIA (vendor 10de) no barramento PCI?
+# Mesma logica do gpu_present do 04-kernel.sh, replicada aqui porque o 02 roda
+# na fase live e nao pode sourcear o 04. TRES estados, probe puro sem die:
+#   0 = GPU NVIDIA presente | 1 = barramento legivel, sem NVIDIA
+#   2 = INDETERMINADO (/sys ausente) — nunca chutar "sem GPU"
+_nvidia_on_bus() {
+    compgen -G '/sys/bus/pci/devices/*' > /dev/null || return 2
+    if command -v lspci > /dev/null 2>&1; then
+        lspci -d 10de: 2>/dev/null | grep -q .
+    else
+        grep -qi '^0x10de$' /sys/bus/pci/devices/*/vendor 2>/dev/null
+    fi
+}
+
+# warn_video_cards: o VIDEO_CARDS="nvidia" do make.conf e um valor FIXO, escrito
+# na fase live, onde ainda nao ha nada instalado para consultar. Avisar e o
+# maximo defensavel aqui: gravar outro valor divergiria do driver que o 04
+# instala, e abortar puniria quem so quer gerar a config antes de plugar a GPU.
+# O aborto de verdade, quando ha divergencia, e do 04 (que decide o driver).
+warn_video_cards() {
+    local rc=0
+    _nvidia_on_bus || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        2) log_warn "02: barramento PCI ilegivel (/sys ausente?) — nao deu para confirmar a GPU. make.conf leva VIDEO_CARDS=\"nvidia\" mesmo assim." ;;
+        *) log_warn "02: nenhuma GPU NVIDIA (vendor 10de) vista no barramento PCI, mas make.conf leva VIDEO_CARDS=\"nvidia\" (alvo do projeto: RTX 5060 Ti). Se esta maquina nao tem NVIDIA, ajuste VIDEO_CARDS no make.conf gerado e rode o 04 com NVIDIA_MODE=skip." ;;
+    esac
+}
+
 # _write_generated <arquivo> <gen_fn>: escreve a saida de gen_fn no arquivo de
 # forma atomica (tmp + mv no mesmo filesystem). Nao decide nada — quem decide
 # se precisa escrever e o probe do run_step.
+# Materializa o conteudo ANTES de tocar no destino: se o gerador (ou a escrita
+# do tmp) falhar por disco cheio, morremos aqui e o arquivo antigo continua
+# intacto — o mv nunca chega a publicar um parcial.
 _write_generated() {
-    local file="$1" gen_fn="$2"
-    "$gen_fn" > "${file}.tmp"
+    local file="$1" gen_fn="$2" content
+    content="$("$gen_fn")" \
+        || die "gerador $gen_fn falhou ao produzir o conteudo de $file"
+    printf '%s\n' "$content" > "${file}.tmp" \
+        || die "falha ao escrever ${file}.tmp (disco cheio? alvo montado read-only?)"
     mv -f "${file}.tmp" "$file"
     log_info "escrito $file"
 }
 
 # _probe_generated <arquivo> <gen_fn>: retorna 0 se o arquivo existe, contem o
-# header gerado E o conteudo bate byte-a-byte (via sha256) com o desejado.
+# header E o trailer gerados, E o conteudo bate byte-a-byte (via sha256) com o
+# desejado.
+# Fail-closed: o gerador e materializado UMA vez, com exit code explicito. Na
+# forma antiga ele rodava dentro de command substitution em contexto
+# condicional, entao o exit code era engolido: um gerador que falhasse de forma
+# deterministica (disco cheio) produzia o mesmo parcial dos dois lados, os
+# hashes batiam e o probe reportava "ja feito" sobre um arquivo corrompido.
 _probe_generated() {
-    local file="$1" gen_fn="$2"
+    local file="$1" gen_fn="$2" want
     [[ -f "$file" ]] || return 1
     grep -qF "$GENERATED_HEADER" "$file" || return 1
-    [[ "$(_sha256_stdin < "$file")" == "$("$gen_fn" | _sha256_stdin)" ]]
+    # trailer ausente == arquivo truncado; nao-feito, independente do hash
+    grep -qF "$GENERATED_TRAILER" "$file" || return 1
+    want="$("$gen_fn")" || return 1
+    [[ "$(_sha256_stdin < "$file")" == "$(printf '%s\n' "$want" | _sha256_stdin)" ]]
 }
 
 # gen_make_conf: make.conf enxuto, conforme o Handbook AMD64
@@ -102,7 +150,9 @@ MAKEOPTS="$MAKEOPTS"
 #USE=""
 
 # --- Hardware (Handbook: VIDEO_CARDS / bootloader) -------------------------
-# RTX 5060 Ti (Blackwell): driver proprietario nvidia (04-kernel.sh instala)
+# RTX 5060 Ti (Blackwell): driver proprietario nvidia (04-kernel.sh instala).
+# Valor FIXO: este script roda na fase live, e o alvo do projeto e esta GPU.
+# O script confere o barramento PCI e AVISA se nao ve nenhuma NVIDIA.
 VIDEO_CARDS="nvidia"
 # GRUB somente UEFI 64-bit (Handbook: Configuring the bootloader > Emerge)
 GRUB_PLATFORMS="efi-64"
@@ -115,17 +165,22 @@ ACCEPT_LICENSE="@FREE"
 
 # Saida de ferramentas de build sempre em ingles (facilita buscar erros)
 LC_MESSAGES=C.utf8
+$GENERATED_TRAILER
 EOF
 }
 
 # gen_nvidia_license: excecao de licenca por pacote para o driver NVIDIA
-# (Handbook: ACCEPT_LICENSE > via package.license). O ramo >=595 usa a licenca
-# NVIDIA-2025; NVIDIA-2023 cobre ramos anteriores (rede de seguranca caso a
-# selecao de versao do 04 caia no ramo 580.x para Blackwell).
+# (Handbook: ACCEPT_LICENSE > via package.license).
+# HOJE a arvore inteira do nvidia-drivers (de 390.157 ate o ramo mais recente)
+# declara uma unica licenca: NVIDIA-2025 — inclusive o ramo 580.x, alvo do
+# fallback de selecao do 04 para Blackwell. Nao existe ebuild em arvore com
+# NVIDIA-2023, entao lista-la aqui nao e rede de seguranca nenhuma: so gera
+# aviso de "licenca inexistente" no portage.
 gen_nvidia_license() {
     cat <<EOF
 $GENERATED_HEADER
-x11-drivers/nvidia-drivers NVIDIA-2025 NVIDIA-2023
+x11-drivers/nvidia-drivers NVIDIA-2025
+$GENERATED_TRAILER
 EOF
 }
 
@@ -141,9 +196,15 @@ probe_make_conf() {
 
 do_make_conf() {
     _write_generated "$PORTAGE_DIR/make.conf" gen_make_conf
-    # marker carrega o hash do conteudo gerado (registro/auditoria)
-    mark_done 02-make-conf "$(gen_make_conf | _sha256_stdin)"
+    # marker carrega o hash do arquivo COMO GRAVADO (registro/auditoria).
+    # Hashear o arquivo, e nao uma nova rodada do gerador, mantem o marker
+    # fiel ao que esta em disco.
+    mark_done 02-make-conf "$(_sha256_stdin < "$PORTAGE_DIR/make.conf")"
 }
+
+# Fora do run_step de proposito: o aviso vale mesmo quando o make.conf ja esta
+# feito e o passo e pulado — o arquivo com VIDEO_CARDS="nvidia" segue valendo.
+warn_video_cards
 
 run_step 02-make-conf probe_make_conf do_make_conf
 
@@ -179,7 +240,8 @@ probe_nvidia_license() {
 
 do_nvidia_license() {
     _write_generated "$PORTAGE_DIR/package.license/nvidia-drivers" gen_nvidia_license
-    mark_done 02-nvidia-license "$(gen_nvidia_license | _sha256_stdin)"
+    # hash do arquivo como gravado (ver comentario em do_make_conf)
+    mark_done 02-nvidia-license "$(_sha256_stdin < "$PORTAGE_DIR/package.license/nvidia-drivers")"
 }
 
 run_step 02-nvidia-license probe_nvidia_license do_nvidia_license
