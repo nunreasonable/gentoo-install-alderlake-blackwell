@@ -493,10 +493,12 @@ print_final_instructions() {
     log_info "    root       (senha definida no prompt '06-root-password')"
     log_info "    $USERNAME  (senha definida no prompt '06-user-password'; grupos: $USER_GROUPS)"
     log_info ""
-    log_info "ATENCAO ao teclado: o console instalado usa KEYMAP=$KEYMAP. Se voce"
-    log_info "digitou as senhas num live ISO com layout diferente, simbolos podem"
-    log_info "sair em outra posicao. Se o login falhar, no menu do GRUB tecle 'e',"
-    log_info "acrescente 'rw init=/bin/bash' na linha 'linux', Ctrl+X, e rode 'passwd'."
+    # O aviso sobre layout de teclado fica no 06, imediatamente ANTES de cada
+    # prompt de senha, que e onde ele muda o comportamento. Aqui sobra so a
+    # recuperacao, util justamente quando o aviso nao adiantou.
+    log_info "Se o login falhar apos o reboot (layout de teclado diferente na hora"
+    log_info "de definir a senha), no menu do GRUB tecle 'e', acrescente"
+    log_info "'rw init=/bin/bash' na linha 'linux', Ctrl+X, e rode 'passwd'."
     log_info ""
     log_info "Para finalizar, execute MANUALMENTE (este script NUNCA reboota sozinho):"
     log_info ""

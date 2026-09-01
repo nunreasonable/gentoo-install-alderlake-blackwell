@@ -70,6 +70,14 @@ interactive_passwd() {
     if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
         die "sem terminal para 'passwd $user' interativo — defina $hash_var em vars.sh (ex.: openssl passwd -6) para modo nao-interativo"
     fi
+    # Aviso de layout ANTES do prompt, nao no resumo final: o prompt roda no
+    # console do live ISO, cujo layout pode ser diferente do KEYMAP que o
+    # sistema instalado vai carregar. Senha com simbolo digitada num layout e
+    # lida em outro nao confere, e o sintoma so aparece no primeiro login,
+    # depois do reboot — quando ja nao da para saber se a senha esta errada ou
+    # se e a tecla. Aconteceu no primeiro smoke-test que chegou ao boot.
+    log_warn "o sistema instalado usara KEYMAP=$KEYMAP. Se o layout DESTE console for outro, simbolos (/ ? ; - _) saem em teclas diferentes."
+    log_warn "prefira uma senha so com letras e numeros agora, e troque depois com 'passwd' ja dentro do sistema instalado."
     log_info "defina agora a senha de '$user' (prompt no console):"
     passwd "$user" < /dev/tty > /dev/tty 2>&1
 }
