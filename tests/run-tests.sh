@@ -21,7 +21,7 @@ total_fail=0
 # --- bash -n em tudo -------------------------------------------------------
 printf '\n== bash -n ==\n'
 n_ok=0 n_bad=0
-for f in "$REPO_DIR"/*.sh "$SCRIPT_DIR"/*.sh; do
+for f in "$REPO_DIR"/*.sh "$SCRIPT_DIR"/*.sh "$REPO_DIR"/desktop/*.sh; do
     [[ -e "$f" ]] || continue
     if bash -n "$f" 2>/dev/null; then
         n_ok=$((n_ok + 1))
@@ -37,7 +37,7 @@ printf '  -> %d pass, %d fail\n' "$n_ok" "$n_bad"
 # --- ShellCheck (opcional: binario local, senao container) -----------------
 printf '\n== ShellCheck ==\n'
 if command -v shellcheck > /dev/null 2>&1; then
-    if (cd "$REPO_DIR" && shellcheck -s bash ./*.sh tests/*.sh); then
+    if (cd "$REPO_DIR" && shellcheck -s bash ./*.sh tests/*.sh desktop/*.sh); then
         printf '  -> limpo\n'
     else
         printf '  -> ShellCheck reportou achados (revise; nem todo achado e bug)\n'
@@ -45,7 +45,7 @@ if command -v shellcheck > /dev/null 2>&1; then
 elif command -v podman > /dev/null 2>&1; then
     # Repo montado READ-ONLY: o container nao pode alterar o projeto.
     if podman run --rm -v "$REPO_DIR:/mnt:ro,Z" -w /mnt \
-         docker.io/koalaman/shellcheck:stable -s bash ./*.sh tests/*.sh; then
+         docker.io/koalaman/shellcheck:stable -s bash ./*.sh tests/*.sh desktop/*.sh; then
         printf '  -> limpo\n'
     else
         printf '  -> ShellCheck reportou achados (revise; nem todo achado e bug)\n'
