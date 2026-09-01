@@ -210,7 +210,20 @@ do_gpt() {
     # falharia — matando o script DEPOIS do ERASE ja aceito, com o disco
     # prestes a ser zapado. 'umount "$dev"' e imune ao escaping e derruba
     # todos os mountpoints daquele device.
-    local part
+    # A enumeracao vem de _target_disk_parts (lib.sh) — a MESMA que validate_vars
+    # usa. Havia aqui uma segunda implementacao, `lsblk -nrpo NAME --list`, que
+    # e invalida: -r JA e --raw, e o util-linux recusa combinar --raw com
+    # --list. O lsblk saia com 1, a substituicao de processo devolvia vazio, o
+    # laco nao iterava e o umount residual NAO ACONTECIA — em silencio, porque
+    # `done < <(cmd)` nao propaga o exit code do cmd. O zap seguia com as
+    # particoes antigas ainda montadas e o BLKRRPART falhava depois.
+    # Pego no smoke-test em QEMU de 2026-09-01 (reinstalacao sobre disco usado).
+    #
+    # Capturado em VARIAVEL de proposito: substituicao de processo esconde a
+    # falha, atribuicao nao. Falha de enumeracao aborta ANTES do zap.
+    local parts part
+    parts="$(_target_disk_parts)" \
+        || die "nao consegui enumerar as particoes de $TARGET_DISK (lsblk falhou) — abortando ANTES de tocar no disco"
     while read -r part; do
         [[ -n "$part" ]] || continue
         # findmnt --source e a fonte de verdade (o MOUNTPOINT do lsblk e
@@ -220,7 +233,7 @@ do_gpt() {
                 || die "nao foi possivel desmontar $part — feche o que estiver usando o alvo e re-execute"
             log_info "desmontado o device $part"
         fi
-    done < <(lsblk -nrpo NAME --list "$TARGET_DISK")
+    done <<< "$parts"
 
     # Holders ativos (LVM/LUKS/RAID de uma instalacao anterior, que live ISOs
     # costumam auto-ativar) seguram a tabela ANTIGA no kernel: o BLKRRPART do

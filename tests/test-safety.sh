@@ -168,7 +168,63 @@ for step in "$REPO_DIR"/0[0-6]-*.sh; do
     fi
 done
 
-# --- 8. nenhuma autodeteccao de disco ------------------------------------
+# --- 8. as invocacoes de lsblk/findmnt sao VALIDAS -----------------------
+# Uma combinacao de flags invalida (ex.: `-r` junto de `--list`, que o
+# util-linux recusa) faz o comando sair com erro e a substituicao de processo
+# devolver VAZIO. Laco de umount/guarda de mount nao itera, e falha ABERTA: o
+# script segue como se o disco estivesse livre. Foi exatamente isso que
+# aconteceu em 00-partition.sh em 2026-09-01.
+#
+# Este teste EXECUTA cada combinacao contra um disco real do host. lsblk e
+# findmnt sao read-only: nao escrevem nada, nao montam nada.
+real_disk="$(lsblk -ndo NAME 2>/dev/null | head -n1)"
+if [[ -z "$real_disk" ]]; then
+    printf '  SKIP  nenhum disco visivel para validar as flags de lsblk\n'
+else
+    real_disk="/dev/$real_disk"
+    bad=0
+    while IFS= read -r flags; do
+        [[ -n "$flags" ]] || continue
+        # shellcheck disable=SC2086  # split proposital: sao flags separadas
+        err="$(lsblk $flags "$real_disk" 2>&1 >/dev/null || true)"
+        if grep -qiE 'cannot be combined|unrecognized|invalid option|unknown column' <<< "$err"; then
+            no "lsblk com flags invalidas nos scripts: 'lsblk $flags'" "$err"
+            bad=1
+        fi
+    done < <(grep -rhvE '^[[:space:]]*#' "$REPO_DIR"/*.sh \
+             | grep -ohE 'lsblk (-[^"|)]*)' \
+             | sed 's/^lsblk //; s/[[:space:]]*$//' | sort -u)
+    (( bad == 0 )) && ok "todas as combinacoes de flags do lsblk nos scripts sao aceitas"
+
+    bad=0
+    while IFS= read -r flags; do
+        [[ -n "$flags" ]] || continue
+        # shellcheck disable=SC2086  # split proposital
+        err="$(findmnt $flags / 2>&1 >/dev/null || true)"
+        if grep -qiE 'cannot be combined|unrecognized|invalid option|unknown column' <<< "$err"; then
+            no "findmnt com flags invalidas nos scripts: 'findmnt $flags'" "$err"
+            bad=1
+        fi
+    done < <(grep -rhvE '^[[:space:]]*#' "$REPO_DIR"/*.sh \
+             | grep -ohE 'findmnt (-[^"|)$]*)' \
+             | sed 's/^findmnt //; s/--source//; s/[[:space:]]*$//' | sort -u)
+    (( bad == 0 )) && ok "todas as combinacoes de flags do findmnt nos scripts sao aceitas"
+fi
+
+# Enumerar particoes do alvo tem UMA implementacao so (lib.sh). Uma copia
+# divergente foi a causa raiz do bug acima.
+# So conta quando a saida vira DADO (capturada em variavel ou alimentando um
+# laco). lsblk usado para EXIBIR o disco ao operador nao e enumeracao.
+inline="$(grep -rnE '(done[[:space:]]*<[[:space:]]*<\(lsblk|=[[:space:]]*"?\$\(lsblk)[^)]*NAME' \
+          "$REPO_DIR"/0[0-6]-*.sh "$REPO_DIR"/install.sh 2>/dev/null \
+          | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+if [[ -z "$inline" ]]; then
+    ok "nenhuma enumeracao de particoes reimplementada fora do lib.sh"
+else
+    no "enumeracao de particoes duplicada fora do lib.sh (use _target_disk_parts)" "$inline"
+fi
+
+# --- 9. nenhuma autodeteccao de disco ------------------------------------
 if grep -nE 'TARGET_DISK=.*\$\((lsblk|blkid|find|ls)\b' "$REPO_DIR"/*.sh > /dev/null 2>&1; then
     no "TARGET_DISK derivado de enumeracao de blocos (autodeteccao proibida)" \
        "$(grep -nE 'TARGET_DISK=.*\$\((lsblk|blkid|find|ls)\b' "$REPO_DIR"/*.sh)"
