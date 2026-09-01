@@ -1,0 +1,314 @@
+# VALIDACAO — registro completo dos testes e das correcoes
+
+Este documento e o **historico factual** do que foi executado, o que quebrou e
+o que foi corrigido. Ele existe para responder a uma pergunta especifica:
+*"em que evidencia este instalador se apoia?"*
+
+Regra deste arquivo: **so entra o que foi executado.** Nada aqui e inferido de
+leitura de codigo.
+
+---
+
+## Resumo
+
+| | |
+|---|---|
+| Ciclos completos em QEMU/OVMF | **2** (instalacao ponta a ponta + boot) |
+| Bugs encontrados por execucao | **9** (8 no codigo, 1 de ergonomia) |
+| Bugs encontrados por analise estatica | **0** dos 9 acima |
+| Suite de testes do host | 8 grupos, **140 asercoes**, exit 0 |
+| Validado em hardware fisico | **nada** |
+
+O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
+auditoria adversarial multi-agente de 13 dimensoes passaram por cima de **todos
+os nove**. Cada um exigiu executar o codigo.
+
+---
+
+## Ciclo 1 — primeira instalacao completa (2026-09-01)
+
+**Ambiente:** QEMU/OVMF, 6 vCPUs, disco **virtio** (`/dev/vda`) **em branco**,
+`AUTO_CONFIRM=yes`, `NVIDIA_MODE=force`, OpenRC.
+
+Resultado: instalacao completa e **boot do sistema instalado**. Cinco problemas
+no caminho.
+
+### 1.1 — Guarda de disco funcionando (nao era bug)
+
+**Sintoma:** `TARGET_DISK=/dev/nvme0n1 nao existe ou nao pode ser resolvido`.
+
+**Diagnostico:** a VM usa virtio (`/dev/vda`); o default de producao e NVMe. O
+instalador **recusou adivinhar** o disco. Comportamento correto.
+
+**Acao:** nada no instalador. O *workflow de teste* e que estava em prosa no
+README, dependendo de o operador digitar a variavel. Criado
+[`tests/qemu-profile.env`](../tests/qemu-profile.env) (fonte unica, fixa
+`TARGET_DISK=/dev/vda`) e `tests/run-in-qemu-guest.sh`, que se recusa a rodar
+fora de uma VM porque carrega `AUTO_CONFIRM=yes`.
+
+**Commit:** `382457f` · **Testes:** `test-qemu-profile.sh`,
+`test-target-disk-required.sh`
+
+### 1.2 — `preflight_hardware` morria sem GPU NVIDIA
+
+**Sintoma:** a tabela do preflight parava entre `placa` e `gpu`, com
+`falha (exit 1) na sub-etapa '(fora de run_step)'`.
+
+**Causa:** `lspci -d 10de: | grep ... | _pf_first_line`. Sem GPU NVIDIA no
+barramento — o caso normal numa VM sem passthrough — o `grep` nao casa e sai
+com 1, o `pipefail` propaga para a atribuicao e o `set -e` mata o preflight.
+Ironia: tres linhas abaixo o codigo trata "sem NVIDIA" como aviso.
+
+**Correcao:** `|| true` em quatro pipelines (`nv_line`, `nvme_ctrl`, `net_ctrl`,
+`audio_ctrl`). Numa VM, tres deles disparariam em sequencia.
+
+**Commit:** `b320368`
+
+### 1.3 — `make install` gravava `/boot/vmlinuz` sem versao
+
+**Sintoma:** `Cannot find LILO.` seguido de
+`make install concluido mas /boot/vmlinuz-6.18.48-gentoo nao existe`.
+
+**Causa:** faltava `sys-kernel/installkernel`. Sem `/sbin/installkernel`, o
+fallback do proprio kernel copia o bzImage para `/boot/vmlinuz` **sem sufixo de
+versao**, tenta o LILO, e **sai com 0**. O `make install` mentiu.
+
+**Quem pegou:** a verificacao pos-instalacao (`[[ -f /boot/vmlinuz-$kver ]]`).
+Sem ela o `05` teria gerado um `grub.cfg` apontando para um kernel inexistente,
+e a falha apareceria como `grub rescue` no primeiro boot.
+
+**Correcao:** emerge do `sys-kernel/installkernel` com **todos** os nove
+backends desligados em `package.use` (`dracut`, `ugrd`, `uki`, `ukify`,
+`systemd`, `systemd-boot`, `grub`, `refind`, `efistub`) — varios geram
+initramfs ou UKI, incompativeis com o design sem initramfs. Como nome de USE
+flag muda entre versoes, a garantia real e uma checagem pos-`make install` que
+falha se qualquer `initramfs-*`/`initrd-*` aparecer em `/boot`.
+
+**Commits:** `9a4dfcf`, `59bf66d`
+
+### 1.4 — `probe_default_grub` reprovava o proprio arquivo
+
+**Sintoma:** `[05-default-grub] do_fn terminou mas o probe ainda reporta
+nao-feito — sub-etapa inconsistente`.
+
+**Causa:** o probe exige "nenhum `root=` ativo" (quem emite e o `10_linux`), mas
+greppava o arquivo **inteiro**. O comentario que o proprio `do_fn` escreve,
+explicando por que nao ha `root=`, contem a string quatro vezes.
+
+**Correcao:** excluir linhas de comentario antes do teste.
+
+**Commit:** `b5015f2`
+
+### 1.5 — Resume caro
+
+**Sintoma:** um resume que reprovava por faltar **um** pacote pequeno remergia o
+`linux-firmware` inteiro (~2 GB).
+
+**Causa:** `emerge <pacote>` re-mergeia o que ja esta instalado; pular exige
+`--noreplace`.
+
+**Commit:** `b5015f2`
+
+### 1.6 — Login impossivel apos o boot (ergonomia)
+
+**Sintoma:** sistema bootou; `root` e `gentoo` recusavam a senha.
+
+**Causa:** o layout do teclado tinha sido trocado no live ISO, e o console
+instalado carrega `KEYMAP=br-abnt2`. Simbolos saem em teclas diferentes.
+
+**Correcao:** aviso de layout movido para **antes de cada prompt de senha** (era
+so no resumo final, tarde demais), com recomendacao de usar letras e numeros e
+trocar depois. O bloco final lista as contas criadas e o procedimento de
+recuperacao via GRUB (`rw init=/bin/bash`).
+
+**Commit:** `a4a0e5b`
+
+> Este e o unico item da lista que nao e bug de codigo. Custou o mesmo tempo que
+> os outros: um sistema que boota perfeitamente e tranca o operador do lado de
+> fora falhou do mesmo jeito.
+
+---
+
+## Rodada de auditoria — sem execucao (commit `07743d4`)
+
+Correcao dos achados P1/P2 de uma auditoria do estado do repositorio. **Nao
+validada em execucao** naquele momento; validada no Ciclo 2.
+
+| Problema | Correcao |
+|---|---|
+| Hashes de senha persistidos no `vars.sh` do sistema instalado | `secrets.env` separado, modo `0600`, removido no fim |
+| State sem identidade do installer | `.installer` com `schema=`/`commit=`; commit diferente avisa, schema diferente aborta |
+| `ROOT_FS` como autoridade unica (03 e 06 podiam discordar) | `root_fs_actual()` compartilhada, com `blkid` como fato |
+| Perfil detectado por `NR==2` da saida do `eselect` | `readlink -f /etc/portage/make.profile` (fonte canonica) |
+| Sync probe, `NVIDIA_MODE=skip` | Auditados, **corretos**, nao reescritos — so testes |
+
+**Regressao introduzida e capturada antes do commit:** ao ligar o `06` ao
+filesystem real, ele passou a usar `$ROOT_PART` sem chamar
+`compute_partitions` — `unbound variable` sob `set -u`. Corrigida e imunizada
+por um teste que varre todos os `0[0-6]-*.sh`.
+
+Suite: 17 → **131** asercoes.
+
+---
+
+## Ciclo 2 — reinstalacao sobre disco usado
+
+**Ambiente:** o mesmo, mas o disco **ja continha a instalacao do Ciclo 1**. Esse
+caminho de codigo — reparticionar por cima — nunca tinha sido exercitado.
+
+Resultado: instalacao completa, boot, e `nvidia-drivers` **compilado**. Tres
+problemas no caminho.
+
+### 2.1 — `lsblk` invalido fazia o umount pre-zap falhar em silencio
+
+**Sintoma:** `lsblk: options --raw and --list cannot be combined`, e depois
+`o kernel nao releu a tabela de particoes nova de /dev/vda`.
+
+**Causa:** `lsblk -nrpo NAME --list` — `-r` **ja e** `--raw`, e o util-linux
+recusa combinar os dois. O `lsblk` saia com 1, a substituicao de processo
+devolvia **vazio**, o `while read` nao iterava, e o laco de `umount` que solta o
+disco antes do zap **nao fazia nada**. Em silencio: `done < <(cmd)` nao propaga
+exit code, e o trap `ERR` disparou dentro do subshell da substituicao.
+
+O `sgdisk` seguiu com as particoes antigas montadas e o `BLKRRPART` falhou — o
+segundo erro era so o sintoma.
+
+**Gravidade:** a guarda falhava **aberta**. Para codigo destrutivo e o pior modo
+de falha possivel.
+
+**Correcao:** usar `_target_disk_parts` do `lib.sh` — a **mesma** funcao que o
+`validate_vars` usa. Havia duas implementacoes do mesmo conceito, e a copia
+estava quebrada. Resultado capturado em **variavel**, nao em substituicao de
+processo: atribuicao propaga falha, `<(...)` esconde.
+
+**Commit:** `03dda46` · **Teste novo:** extrai toda combinacao de flags de
+`lsblk`/`findmnt` dos scripts (ignorando comentarios) e **executa** cada uma
+contra um disco real do host. Ambos sao read-only.
+
+### 2.2 — `nvidia-drivers[tools]` puxava a arvore do GTK
+
+**Sintoma:** o emerge parava pedindo `--autounmask-write`, com esta cadeia:
+
+```
+nvidia-drivers[tools] -> nvidia-settings -> adwaita-icon-theme
+  -> librsvg -> gtk+ -> cairo[X], freetype[harfbuzz]
+```
+
+**Causa:** `tools` vem **enabled by default** (conferido em
+`packages.gentoo.org`) e instala o `nvidia-settings`. Num sistema base nenhum
+desses USE esta ligado.
+
+**Correcao:** `-tools` fixado em todos os ramos. Este instalador entrega um
+sistema **base bootavel**, nao um desktop: o modulo de kernel e as bibliotecas
+do driver bastam.
+
+**Decisao deliberada:** **nao** usar `--autounmask-write`. Ele reescreve
+`package.use`/`package.accept_keywords` sozinho, e essa decisao — que pode
+desmascarar pacote instavel — e do operador. Ha teste garantindo a ausencia da
+flag.
+
+**Bug secundario, encontrado ao escrever o primeiro:** a varredura que procura
+`kernel-open` perdido em `package.use/` greppava comentarios — e o arquivo que o
+script gera agora **menciona** `kernel-open` ao documentar por que nao o usa.
+Acusaria o arquivo que acabou de escrever: a mesma auto-sabotagem do item 1.4.
+Corrigida junto.
+
+**Commit:** `49e2a62`
+
+### 2.3 — `libglvnd[X]`
+
+**Sintoma:** depois do `-tools`, restou **uma** mudanca de USE:
+`>=media-libs/libglvnd-1.7.0 X`, exigida por `nvidia-drivers[X]`.
+
+**Correcao:** declarar `media-libs/libglvnd X`. Mantivemos `X` no driver em vez
+de desligar: a maquina alvo tem uma RTX 5060 Ti e vai rodar ambiente grafico, e
+o `make.conf` ja declara `VIDEO_CARDS="nvidia"` — instalar sem `X` significaria
+recompilar o driver depois. O arquivo gerado documenta como inverter num sistema
+headless.
+
+**Commit:** `3e364f4` · **Teste:** coerencia entre o `X` do driver e o do
+`libglvnd` (um nao pode existir sem o outro).
+
+### Estado final do Ciclo 2
+
+```
+OS: Gentoo Linux x86_64          Kernel: Linux 6.18.48-gentoo
+Host: KVM/QEMU (Q35 + ICH9)      Packages: 342 (emerge)
+CPU: 6 x i5-12600K               Disk (/): 8.80 GiB / 42.02 GiB - ext4
+GPU: QXL paravirtual             Local IP (enp1s0): 192.168.122.118/24
+Swap: 0 B / 16.00 GiB            Locale: pt_BR.utf8
+```
+
+Boot sem initramfs, raiz por `root=PARTUUID`, rede por DHCP, locale e keymap
+aplicados, swap ativa, login funcionando.
+
+---
+
+## O que os dois ciclos provaram
+
+| Propriedade | Estado |
+|---|---|
+| Instalacao ponta a ponta em disco **em branco** | Executada (Ciclo 1) |
+| Instalacao ponta a ponta em disco **ja usado** | Executada (Ciclo 2) |
+| Boot do sistema instalado, **sem initramfs** | Executado (2x) |
+| `root=PARTUUID` resolvido pelo kernel | Executado (2x) |
+| GRUB UEFI + entrada de NVRAM no OVMF | Executado (2x) |
+| `fsck.vfat` na ESP no primeiro boot | Executado (2x) |
+| Resume apos falha real de sub-etapa | Executado (~9 vezes, involuntariamente) |
+| **Build** do `nvidia-drivers` contra o kernel gerado | Executado (Ciclo 2) |
+| `passwd` interativo atraves do chroot | Executado (2x) |
+| Rede (DHCP), locale, keymap, swap | Executados |
+
+**Reprodutibilidade:** dois ciclos completos, mas **nao** a mesma versao do
+codigo — cada ciclo corrigiu bugs no meio. Uma instalacao limpa do zero, com o
+codigo atual e sem intervencao, **ainda nao foi feita**.
+
+---
+
+## O que continua sem validacao
+
+| | Por que |
+|---|---|
+| Boot em **bare metal** | Nunca executado |
+| **Runtime** do NVIDIA (carga do modulo, firmware GSP, modeset) | QEMU sem passthrough PCI nao tem GPU NVIDIA. O Ciclo 2 validou o **build**, nao o funcionamento |
+| NVRAM do firmware **ASUS 1836** | OVMF nao e o firmware da ASUS |
+| Alder Lake real (ITMT, Thread Director, `intel_pstate`/`intel_idle`) | A VM expoe 6 vCPUs homogeneas, nao 6P+4E |
+| NVMe fisico, rede e audio da B760M-E | Dispositivos virtio na VM |
+| Suspend/resume | Nunca executado |
+| Instalacao limpa com o codigo atual, sem intervencao | Nunca executada |
+| Branch `INIT_SYSTEM=systemd` | Nunca executado |
+
+---
+
+## Suite de testes do host
+
+`./tests/run-tests.sh` — **140 asercoes**, exit 0. Nenhum teste particiona,
+monta, baixa ou compila.
+
+| Grupo | Asercoes | Cobre |
+|---|---|---|
+| `bash -n` | 22 | sintaxe de todos os scripts e testes |
+| ShellCheck | — | container, repo montado read-only |
+| `test-safety` | 32 | `TARGET_ROOT` canonicalizado, `AUTO_CONFIRM` nao bypassa REFORMAT, preflight antes do destrutivo, flags de `lsblk`/`findmnt` **executadas**, globais de particao |
+| `test-steps-invariants` | 35 | flags de resume, sentinela do sync, `NVIDIA_MODE=skip`, USE do nvidia, branch systemd |
+| `test-state-version` | 15 | schema/commit: igual, diferente, incompativel, corrompido, ausente |
+| `test-root-fs` | 13 | matriz `ROOT_FS` x filesystem real |
+| `test-secrets` | 13 | hashes fora do `vars.sh`, modo `0600`, remocao |
+| `test-profile-detection` | 10 | symlink canonico, com `eselect` hostil e sem `eselect` |
+| `test-qemu-profile` | 9 | `/dev/vda` explicito, default NVMe intacto, sem autodeteccao |
+| `test-target-disk-required` | 8 | disco ausente/invalido aborta sem eleger substituto |
+| `test-all-vars` | 5 | toda variavel de `vars.sh` atravessa para o chroot |
+
+### Por que a suite nao substitui a execucao
+
+Dos nove bugs encontrados, **zero** eram detectaveis estaticamente:
+
+- 1.2, 2.2, 2.3 exigiam executar comandos externos (`lspci`, `emerge`)
+- 1.3, 1.4, 2.1 exigiam observar o **efeito** de um comando que sai com 0 ou
+  falha em silencio
+- 1.5 exigia observar o **custo** de um resume
+- 1.6 exigia um humano tentando fazer login
+
+Os testes existem para impedir **reintroducao**, e cada um dos nove tem um
+teste que o guarda. Eles nao encontram a proxima classe de bug — cada condicao
+inicial nova (disco limpo, disco usado, hardware real) revela outra camada.

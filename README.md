@@ -31,12 +31,22 @@ Esta secao e a informacao mais importante do repositorio. Ela e literal.
 | `bash -n` (sintaxe) em todos os scripts | **Passou** |
 | ShellCheck (container, repo montado read-only) | **Passou** |
 | Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
-| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 131 asercoes em 8 grupos |
+| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 140 asercoes em 8 grupos |
 
-### Execucao em QEMU/OVMF — **completa, com boot** (2026-09-01)
+### Execucao em QEMU/OVMF — **dois ciclos completos, com boot** (2026-09-01)
 
-Instalacao inteira executada e o sistema instalado **bootou**. VM: OVMF/UEFI,
-6 vCPUs, disco **virtio** (`/dev/vda`), `NVIDIA_MODE=force`, OpenRC.
+Duas instalacoes inteiras executadas, ambas com o sistema resultante **bootando**.
+VM: OVMF/UEFI, 6 vCPUs, disco **virtio** (`/dev/vda`), `NVIDIA_MODE=force`, OpenRC.
+
+- **Ciclo 1** — disco em branco. Encontrou 5 problemas.
+- **Ciclo 2** — **reinstalacao sobre o disco ja usado** (caminho de codigo que
+  nunca tinha sido exercitado). Encontrou mais 3, e concluiu com o
+  `nvidia-drivers` **compilado** contra o kernel gerado.
+
+> **[docs/VALIDACAO.md](docs/VALIDACAO.md)** tem o registro completo: cada bug,
+> sintoma, causa raiz, correcao, commit e o teste que o guarda.
+
+A tabela abaixo descreve as etapas; todas passaram nos dois ciclos.
 
 | Etapa | Estado | O que ficou provado |
 |---|---|---|
@@ -56,7 +66,8 @@ NVRAM registrou a entrada. No boot, `fsck.fat` rodou na ESP com sucesso — o qu
 so e possivel porque a etapa `06` instala `sys-fs/dosfstools` (a ESP tem
 `passno 2` no fstab; sem `fsck.vfat` o `localmount` do OpenRC nao subiria).
 
-**Cinco bugs reais encontrados por esta execucao**, todos corrigidos:
+**Nove bugs reais encontrados pelos dois ciclos**, todos corrigidos. Os cinco do
+Ciclo 1:
 
 1. **Guarda de disco funcionando** — a VM usa `/dev/vda` e o `TARGET_DISK`
    default e `/dev/nvme0n1`. O instalador **abortou** em vez de adivinhar
@@ -79,35 +90,54 @@ so e possivel porque a etapa `06` instala `sys-fs/dosfstools` (a ESP tem
    resume que reprovava por faltar **um** pacote pequeno remergia o
    `linux-firmware` inteiro (~2GB). Corrigido com `--noreplace`.
 
-Nenhum dos cinco e detectavel por analise estatica. Os quatro primeiros exigem
-executar a etapa; o quinto exige observar o **custo** de um resume real. A
-auditoria adversarial de 13 dimensoes, o `bash -n` e o ShellCheck passaram por
-cima de todos.
+O **Ciclo 2** (reinstalacao sobre disco usado) encontrou mais tres, resumidos:
+
+6. **`lsblk -nrpo NAME --list` e invalido** (`-r` ja e `--raw`). O comando saia
+   com 1, a substituicao de processo devolvia vazio, e o laco de `umount` que
+   solta o disco antes do zap **nao rodava — em silencio**. A guarda falhava
+   **aberta**, e o `BLKRRPART` falhava depois.
+7. **`nvidia-drivers[tools]`** puxava `nvidia-settings` → GTK → `cairo[X]`,
+   travando o emerge no autounmask.
+8. **`libglvnd[X]`**, ultima dependencia de `nvidia-drivers[X]`.
+
+**Nenhum dos nove e detectavel por analise estatica.** Uns exigem executar
+comandos externos, outros observar o *efeito* de um comando que sai com 0, um
+exige medir o **custo** de um resume, e um exige um humano tentando fazer login.
+A auditoria adversarial de 13 dimensoes, o `bash -n` e o ShellCheck passaram por
+cima de **todos**.
 
 ### O que continua **NAO** validado
 
 | Verificacao | Estado |
 |---|---|
 | Boot em **bare metal** | **NUNCA** |
-| Runtime NVIDIA (modulo, GSP, modeset, Blackwell) | **Impossivel em QEMU** |
+| **Runtime** NVIDIA (modulo, GSP, modeset, Blackwell) | **Impossivel em QEMU** — o Ciclo 2 validou o **build**, nao o funcionamento |
 | NVRAM do firmware **ASUS 1836** (o OVMF nao e ele) | **NUNCA** |
 | Alder Lake real: ITMT, Thread Director, `intel_pstate`/`intel_idle` | **NUNCA** |
 | NVMe fisico, rede e audio da B760M-E | **NUNCA** |
 | Suspend/resume | **NUNCA** |
-| Re-execucao / resume apos interrupcao real | **Parcial** — houve resume apos as falhas acima, mas nao apos interrupcao no meio de uma sub-etapa |
-| Reproducibilidade (segunda instalacao limpa do zero) | **NUNCA** |
+| Re-execucao / resume apos falha real | **Executado ~9x** (involuntariamente, a cada bug) |
+| Reinstalacao sobre disco ja usado | **Executada** (Ciclo 2) |
+| Instalacao limpa com o codigo ATUAL, sem intervencao | **NUNCA** — cada ciclo corrigiu bugs no meio |
 | Branch `INIT_SYSTEM=systemd` | **NUNCA** executado |
 
 ### Traduzindo
 
 A instalacao roda de ponta a ponta e o sistema resultante **boota**, numa VM,
-com OpenRC. Isso foi provado uma vez, em 2026-09-01.
+com OpenRC — em disco limpo e tambem por cima de uma instalacao anterior. Isso
+foi provado duas vezes, em 2026-09-01, e o `nvidia-drivers` **compilou** contra
+o kernel gerado.
 
-Isso **nao** e reprodutibilidade (uma execucao), **nao** e o hardware alvo
-(QEMU nao e uma B760M-E com uma RTX 5060 Ti), e **nao** cobre o branch systemd.
+Isso ainda **nao** e reprodutibilidade: cada ciclo corrigiu bugs no meio, entao
+nenhuma instalacao completa foi feita com o codigo exatamente como esta hoje.
+E **nao** e o hardware alvo — QEMU nao e uma B760M-E com uma RTX 5060 Ti.
+
 A parte do projeto que mais pode dar errado — o driver NVIDIA proprietario
-carregando numa GPU Blackwell fisica, com o firmware GSP e o handoff de KMS — e
-justamente a que uma VM sem passthrough PCI nunca vai tocar.
+**carregando** numa GPU Blackwell fisica, com o firmware GSP e o handoff de
+KMS — e justamente a que uma VM sem passthrough PCI nunca vai tocar. O Ciclo 2
+provou que o driver **compila**; nao que ele funciona.
+
+O branch `INIT_SYSTEM=systemd` continua sem nenhuma execucao.
 
 Antes de rodar isto num disco com dados, leia a secao **[SO BARE METAL]**
 abaixo e **[docs/ARMADILHAS.md](docs/ARMADILHAS.md)** — manual de operacao com
@@ -342,6 +372,8 @@ na fase live, 03–06 so dentro do chroot.
 | `install.sh` | ambas | Orquestrador: preflight, 00→02 no live, mounts do chroot, re-entrada com `--chroot`, 03→06 dentro do alvo |
 | `kernel-fragment.config` | — | Fragmento Kconfig comentado por bloco (Alder Lake, B760, NVMe built-in, handoff NVIDIA, IOMMU, EFI, virtio para a VM) |
 | `docs/ARMADILHAS.md` | — | **Manual de operacao**: como nao cair nas armadilhas conhecidas |
+| `docs/VALIDACAO.md` | — | **Registro factual** dos ciclos executados: cada bug, causa raiz, correcao, commit e teste que o guarda |
+| `docs/audit/` | — | Achados brutos da auditoria adversarial multi-agente |
 | `README.md` | — | Este arquivo |
 | `tests/run-tests.sh` | host | Roda `bash -n`, ShellCheck e os testes unitarios. **Nao executa o instalador** |
 | `tests/qemu-profile.env` | VM | Perfil do ambiente de teste: `TARGET_DISK=/dev/vda` explicito, `AUTO_CONFIRM=yes`, `NVIDIA_MODE=force` |
