@@ -24,39 +24,69 @@ Em hardware incompativel o objetivo e **falhar limpo** (ver
 
 Esta secao e a informacao mais importante do repositorio. Ela e literal.
 
-### O que foi feito
+### Analise estatica
 
 | Verificacao | Estado |
 |---|---|
 | `bash -n` (sintaxe) em todos os scripts | **Passou** |
-| ShellCheck | **Passou** |
+| ShellCheck (container, repo montado read-only) | **Passou** |
 | Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
-| Leituras inofensivas no host (`lsblk`, `findmnt`, `/sys`) para conferir formato de saida de comandos | **Feitas** |
-| Testes de logica de shell isolada em sandbox `/tmp` | **Feitos** para correcoes pontuais |
+| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 17 asercoes |
 
-### O que **NAO** foi feito
+### Execucao em QEMU/OVMF — parcial (2026-09-01)
+
+Primeira execucao real. VM: OVMF/UEFI, 6 vCPUs, disco **virtio** (`/dev/vda`),
+`NVIDIA_MODE=force`. Etapas alcancadas, em ordem:
+
+| Etapa | Estado | O que ficou provado |
+|---|---|---|
+| `preflight_hardware` | **Passou** | Classificou VM (qemu), vendor Intel, modelo repassado por `-cpu host`, UEFI ativo com efivars montado |
+| `00-partition` | **Passou** | GPT, ESP/swap/raiz, `mkfs`, mount — num disco virtio |
+| `01-stage3` | **Passou** | Import da chave releng + conferencia de fingerprint, pointer assinado, download, `gpg --verify` do `.asc`, `sha256sum --check`, extracao. `stage3.identity` gravado com o sha256 real |
+| `02-portage-config` | **Passou** | `make.conf` e `package.license` escritos de fora do chroot |
+| `03-chroot-setup` | **Passou** | `emerge-webrsync` + sync, perfil `23.0`, locale, `fstab` por UUID (ESP em `/efi` `umask=0077` passno 2, raiz passno 1, swap). News reportadas e **nao** marcadas como lidas (`count new` = 1) |
+| `04-kernel` | **Parcial** | Fontes/firmware/microcode emergidos, `eselect kernel` por versao, `merge_config` + `olddefconfig`, **`verify_kconfig` aprovou**, kernel compilado por inteiro, `modules_install` e `depmod` concluidos. **Falhou no `make install`** |
+| `05-bootloader` | **Nao alcancada** | — |
+| `06-users-services` | **Nao alcancada** | — |
+| Boot do sistema instalado | **Nao alcancado** | — |
+
+**Tres bugs reais encontrados por esta execucao**, todos corrigidos:
+
+1. **Guarda de disco funcionando** — a VM usa `/dev/vda` e o `TARGET_DISK`
+   default e `/dev/nvme0n1`. O instalador **abortou** em vez de adivinhar
+   disco. Nao era bug: e a guarda fazendo o trabalho dela. Motivou o
+   [`tests/qemu-profile.env`](tests/qemu-profile.env), que fixa o disco
+   explicitamente para o ambiente de teste.
+2. **`preflight_hardware` morria sem GPU NVIDIA** — `lspci | grep` sem match
+   sai com 1, o `pipefail` propagava e o `set -e` matava o preflight
+   exatamente no caso que o codigo tratava como aviso.
+3. **`make install` gravava `/boot/vmlinuz` sem versao** — faltava
+   `sys-kernel/installkernel`; o fallback do kernel copia sem sufixo de versao,
+   tenta o LILO e **sai com 0**. Pego pela verificacao pos-instalacao; sem ela
+   o `05` teria gerado um `grub.cfg` apontando para um kernel inexistente.
+
+### O que continua **NAO** validado
 
 | Verificacao | Estado |
 |---|---|
-| Instalacao completa executada | **NUNCA** |
+| Instalacao completa ponta a ponta | **NUNCA** |
 | Boot do sistema instalado | **NUNCA** |
-| Execucao em QEMU | **NUNCA** |
+| `05-bootloader` e `06-users-services` | **NUNCA** executadas |
 | Boot em bare metal | **NUNCA** |
 | Re-execucao / resume apos interrupcao real | **NUNCA** |
-| Suite de testes automatizados (`tests/`) | **Nao existe** |
+| Runtime NVIDIA (modulo, GSP, modeset) | **Impossivel em QEMU** |
 
 ### Traduzindo
 
-**Nada neste repositorio foi executado.** Zero boot, zero QEMU, zero
-re-execucao. Nenhum script de instalacao foi rodado nem em dry-run.
+Metade da instalacao ja rodou de verdade uma vez, num ambiente virtualizado.
+A outra metade — bootloader, usuarios, servicos e **o boot em si** — nunca
+executou.
 
-O codigo passa em `bash -n` e ShellCheck, e passou por uma auditoria
-adversarial multi-agente — **e so isso**.
-
-Ler codigo com atencao encontra bugs de logica. **Nao** prova que um kernel
-boota, que um driver carrega, que um firmware retem uma entrada de NVRAM ou que
-o `sgdisk` fez o kernel reler a tabela de particoes. Essas propriedades sao de
-**runtime** e continuam **NAO VALIDADAS**.
+Ler codigo com atencao encontra bugs de logica; rodar em QEMU encontra outros
+(tres, ate agora). Nenhum dos dois prova que um kernel **boota**, que um driver
+carrega, que um firmware retem uma entrada de NVRAM ou que a maquina de
+referencia se comporta como a VM. Essas propriedades continuam **NAO
+VALIDADAS**.
 
 Antes de rodar isto num disco com dados, leia
 **[docs/ARMADILHAS.md](docs/ARMADILHAS.md)** — manual de operacao com o comando
@@ -68,12 +98,17 @@ fazer quando der errado.
 | Marca | Significado |
 |---|---|
 | **[SUPORTADO]** | Implementado no codigo e revisado por leitura |
+| **[QEMU-OK]** | Executado com sucesso na VM QEMU/OVMF — ver tabela acima |
 | **[QEMU-ABLE]** | *Poderia* ser validado em QEMU — **ainda nao foi** |
 | **[SO BARE METAL]** | Impossivel validar em QEMU; exige o hardware fisico |
 | **[NAO VALIDADO]** | Sem execucao de nenhum tipo |
 
-Nao ha nada marcado "VALIDADO EM QEMU" nem "VALIDADO FISICAMENTE" neste
-documento, porque nao ha nada nesse estado.
+**[QEMU-OK]** significa "esta etapa rodou ate o fim numa VM, uma vez". Nao
+significa que e reproduzivel, nem que funciona no bare metal, nem que o
+sistema resultante boota.
+
+Nao ha nada marcado **VALIDADO FISICAMENTE** neste documento, porque nao ha
+nada nesse estado.
 
 ---
 
@@ -286,8 +321,14 @@ na fase live, 03–06 so dentro do chroot.
 | `kernel-fragment.config` | — | Fragmento Kconfig comentado por bloco (Alder Lake, B760, NVMe built-in, handoff NVIDIA, IOMMU, EFI, virtio para a VM) |
 | `docs/ARMADILHAS.md` | — | **Manual de operacao**: como nao cair nas armadilhas conhecidas |
 | `README.md` | — | Este arquivo |
+| `tests/run-tests.sh` | host | Roda `bash -n`, ShellCheck e os testes unitarios. **Nao executa o instalador** |
+| `tests/qemu-profile.env` | VM | Perfil do ambiente de teste: `TARGET_DISK=/dev/vda` explicito, `AUTO_CONFIRM=yes`, `NVIDIA_MODE=force` |
+| `tests/run-in-qemu-guest.sh` | VM | Roda o instalador dentro da VM com o perfil acima; recusa rodar se nao detectar virtualizacao |
+| `tests/test-qemu-profile.sh` | host | Prova que o perfil usa `/dev/vda`, que o default de producao segue NVMe e que nao ha autodeteccao nem fallback de disco |
+| `tests/test-target-disk-required.sh` | host | Prova que `TARGET_DISK` ausente/invalido causa falha dura, sem eleger outro disco |
 
-Nao existe diretorio `tests/`.
+A suite do host cobre **configuracao e guardas de disco**, nao comportamento de
+runtime. Nenhum teste particiona, monta, baixa ou compila coisa alguma.
 
 ---
 
@@ -333,7 +374,7 @@ Nao existe diretorio `tests/`.
 
 ---
 
-## Receita QEMU/libvirt **[QEMU-ABLE — nunca executada]**
+## Receita QEMU/libvirt **[QEMU-OK ate a etapa 04]**
 
 > Esta receita **nunca foi rodada**. Ela e o plano de validacao, nao um relato
 > de validacao. Mesmo se passar por inteiro, ela nao valida nada da lista

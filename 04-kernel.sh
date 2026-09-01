@@ -187,10 +187,25 @@ EOF
     # ignoradas pelo portage; a garantia de verdade e a verificacao logo abaixo.
     mkdir -p /etc/portage/package.use
     cat > /etc/portage/package.use/installkernel <<'EOF'
-# Gerado por 04-kernel.sh — backend tradicional, sem gerador de initramfs.
-# Este projeto boota sem initramfs (drivers de raiz built-in): dracut/ugrd/uki
-# aqui produziriam um initramfs que o grub-mkconfig do 05 passaria a usar.
-sys-kernel/installkernel -dracut -ugrd -uki -ukify -systemd -efistub
+# Gerado por 04-kernel.sh — backend tradicional, TODOS os hooks opcionais off.
+#
+# -dracut -ugrd -uki -ukify : geram initramfs ou UKI. Este projeto boota SEM
+#     initramfs (drivers de raiz built-in, root=PARTUUID); um initramfs aqui
+#     seria referenciado pelo grub-mkconfig do 05 e quebraria a premissa.
+# -systemd -systemd-boot : trocariam o backend para o `kernel-install`, que usa
+#     o layout da Boot Loader Spec (/boot/<machine-id>/<versao>/linux) em vez de
+#     /boot/vmlinuz-<versao>. NAO tem relacao com rodar systemd como init: vale
+#     para os dois valores de INIT_SYSTEM, e e o que mantem o layout de /boot
+#     identico nos dois branches. (No perfil OpenRC o flag systemd ja e
+#     mascarado; o `-` apenas concorda com a mascara.)
+# -grub : regeneraria o grub.cfg durante o `make install` — mas o sys-boot/grub
+#     so e instalado no 05, e o /etc/default/grub com root=PARTUUID tambem so
+#     existe la. Quem gera o grub.cfg neste projeto e o 05, uma vez so.
+# -refind -efistub : gerenciadores de boot que nao usamos.
+#
+# UMA LINHA SO: package.use nao suporta continuacao com "\" — a barra viraria
+# um flag literal e o portage reclamaria de flag invalida.
+sys-kernel/installkernel -dracut -ugrd -uki -ukify -systemd -systemd-boot -grub -refind -efistub
 EOF
 
     # Handbook: emerge das fontes + firmware + microcode (nao pinamos versao;
