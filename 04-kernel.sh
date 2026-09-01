@@ -210,8 +210,14 @@ EOF
 
     # Handbook: emerge das fontes + firmware + microcode (nao pinamos versao;
     # o portage resolve o estavel corrente).
-    emerge sys-kernel/gentoo-sources sys-kernel/linux-firmware sys-firmware/intel-microcode \
-           sys-kernel/installkernel
+    #
+    # --noreplace: `emerge <pacote>` RE-MERGEIA pacote ja instalado. Sem esta
+    # flag, um resume que reprova o probe por um unico pacote faltando (foi o
+    # que aconteceu quando o installkernel entrou nesta lista) remergeia tudo,
+    # incluindo o linux-firmware inteiro — minutos e ~2GB de I/O para instalar
+    # um pacote pequeno. O contrato do projeto e que resume seja barato.
+    emerge --noreplace sys-kernel/gentoo-sources sys-kernel/linux-firmware \
+                       sys-firmware/intel-microcode sys-kernel/installkernel
 
     # Verificar DEPOIS de instalar (invariante 6): o pacote pode estar merged e
     # ainda assim nao ter deixado o binario que o make install procura.

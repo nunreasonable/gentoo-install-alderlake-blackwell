@@ -128,10 +128,18 @@ probe_default_grub() {
     [[ -f /etc/default/grub ]] || return 1
     grep -qx 'GRUB_DISABLE_LINUX_UUID=true' /etc/default/grub || return 1
     grep -qx 'GRUB_DISABLE_LINUX_PARTUUID=false' /etc/default/grub || return 1
-    # Nenhum root= no arquivo: quem emite o root= e o 10_linux, a partir do
-    # estado real do disco. Um root= aqui seria uma segunda fonte de verdade.
-    ! grep -q 'root=' /etc/default/grub || return 1
-    grep -qF 'intel_iommu=on' /etc/default/grub
+    # Nenhum root= ATIVO: quem emite o root= e o 10_linux, a partir do estado
+    # real do disco. Um root= aqui seria uma segunda fonte de verdade.
+    #
+    # Linhas de comentario ficam de fora do teste. Sem isso o probe reprovava o
+    # proprio arquivo que o do_default_grub acabara de escrever: o comentario
+    # que EXPLICA por que nao ha root= contem a string "root=" tres vezes.
+    # Sintoma: "do_fn terminou mas o probe ainda reporta nao-feito".
+    # Pego no primeiro smoke-test em QEMU que chegou na etapa 05.
+    if grep -vE '^[[:space:]]*#' /etc/default/grub | grep -q 'root='; then
+        return 1
+    fi
+    grep -qE '^[[:space:]]*GRUB_CMDLINE_LINUX=.*intel_iommu=on' /etc/default/grub
 }
 
 do_default_grub() {
