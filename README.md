@@ -373,6 +373,7 @@ na fase live, 03–06 so dentro do chroot.
 | `kernel-fragment.config` | — | Fragmento Kconfig comentado por bloco (Alder Lake, B760, NVMe built-in, handoff NVIDIA, IOMMU, EFI, virtio para a VM) |
 | `docs/ARMADILHAS.md` | — | **Manual de operacao**: como nao cair nas armadilhas conhecidas |
 | `docs/VALIDACAO.md` | — | **Registro factual** dos ciclos executados: cada bug, causa raiz, correcao, commit e teste que o guarda |
+| `docs/PROXIMOS-PASSOS.md` | — | **Estado operacional**: onde paramos, o proximo passo, os discos desta maquina e como sair do buraco. Escrito para ser lido do telefone |
 | `docs/audit/` | — | Achados brutos da auditoria adversarial multi-agente |
 | `README.md` | — | Este arquivo |
 | `tests/run-tests.sh` | host | Roda `bash -n`, ShellCheck e os testes unitarios. **Nao executa o instalador** |
