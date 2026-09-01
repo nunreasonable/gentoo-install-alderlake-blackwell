@@ -745,7 +745,15 @@ confirm_expensive() {
 dry_run_guard() {
     [[ "${DESKTOP_DRY_RUN:-no}" == "yes" ]] || return 0
 
-    local origem="${BASH_SOURCE[1]##*/}" etapa
+    # BASH_SOURCE[1] e o arquivo que CHAMOU esta funcao (o numerado), ja que
+    # BASH_SOURCE[0] aponta para o lib-desktop.sh onde ela e definida. O default
+    # nao e decoracao: sob `set -u`, chamar a funcao fora de uma pilha de
+    # arquivos real (um `bash -c` com a funcao eval-ada, por exemplo) faria o
+    # indice inexistente ABORTAR a guarda com "unbound variable" — e uma guarda
+    # de seguranca que morre e pior que guarda nenhuma, porque falha justamente
+    # quando deveria proteger.
+    local origem="${BASH_SOURCE[1]:-script numerado}" etapa
+    origem="${origem##*/}"
     log_warn "DESKTOP_DRY_RUN=yes — '$origem' NAO vai alterar nada nesta execucao."
     log_warn "Nenhum emerge, nenhuma escrita em /etc ou no \$HOME, nenhum servico habilitado."
 

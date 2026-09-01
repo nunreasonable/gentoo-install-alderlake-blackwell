@@ -381,6 +381,23 @@ layout {
 }
 KDL
 
+    # Cantos arredondados. Sintaxe VERIFICADA no resources/default-config.kdl
+    # do upstream (YaLTeR/niri): a regra vive num window-rule, nao no layout.
+    #
+    # clip-to-geometry e obrigatorio junto: sem ele o niri arredonda a BORDA mas
+    # o conteudo da janela continua quadrado, e o resultado sao quinas do app
+    # vazando por cima do canto arredondado.
+    if [[ "$DESKTOP_CORNER_RADIUS" -gt 0 ]]; then
+        cat <<KDL
+
+// Cantos arredondados em todas as janelas.
+window-rule {
+    geometry-corner-radius $DESKTOP_CORNER_RADIUS
+    clip-to-geometry true
+}
+KDL
+    fi
+
     # Xwayland: o niri NAO tem Xwayland embutido e NAO integra o satellite
     # sozinho. Instalar o pacote NAO BASTA — sem esta linha de spawn, NENHUM
     # app X11 abre (inclui muitos jogos e Electron antigo). E o tipo de coisa
@@ -404,6 +421,29 @@ KDL
 // Barra de status.
 spawn-at-startup "waybar"
 KDL
+    fi
+
+    # Papel de parede. O niri nao desenha fundo: sem isto a area vaga fica
+    # PRETA, e numa rice o wallpaper e metade do visual.
+    #
+    # Com DESKTOP_WALLPAPER vazio ainda declaramos o swaybg, mas so com a cor
+    # solida: melhor um fundo na cor da paleta do que preto puro. As aspas
+    # simples no heredoc sao importantes — o $ do swaybg nao pode expandir aqui.
+    if [[ "$DESKTOP_WALLPAPER_TOOL" == "swaybg" ]]; then
+        if [[ -n "$DESKTOP_WALLPAPER" ]]; then
+            cat <<KDL
+
+// Papel de parede (o niri nao desenha fundo sozinho).
+spawn-at-startup "swaybg" "-i" "$DESKTOP_WALLPAPER" "-m" "$DESKTOP_WALLPAPER_MODE"
+KDL
+        else
+            cat <<KDL
+
+// Sem imagem definida (DESKTOP_WALLPAPER vazio): cor solida da paleta, para a
+// area vaga nao ficar preta. Defina DESKTOP_WALLPAPER e rode a etapa 14 de novo.
+spawn-at-startup "swaybg" "-c" "#$DESKTOP_WALLPAPER_COLOR"
+KDL
+        fi
     fi
 
     # Notificacoes: idem. So declara o que foi instalado.
@@ -1017,9 +1057,14 @@ waybar_config_content() {
     "height": 30,
     "spacing": 4,
 
-    "modules-left": ["niri/workspaces", "niri/window"],
+    "//": "Layout enxuto, no espirito da rice de referencia: workspaces em",
+    "//": "pilulas a esquerda, relogio ao centro, e so o essencial a direita.",
+    "//": "cpu/memory/network foram deixados de fora de proposito — sao ruido",
+    "//": "visual permanente para informacao que voce consulta sob demanda.",
+    "//": "Para traze-los de volta, some ao modules-right abaixo.",
+    "modules-left": ["niri/workspaces"],
     "modules-center": ["clock"],
-    "modules-right": ["pulseaudio", "network", "cpu", "memory", "tray"],
+    "modules-right": ["pulseaudio", "tray"],
 
     "niri/workspaces": {
         "format": "{value}"

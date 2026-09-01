@@ -113,6 +113,19 @@ desktop_atoms_tree() {
     fi
 
     [[ "$DESKTOP_SEAT_PROVIDER" == "elogind" ]] && printf '%s\n' sys-auth/elogind
+
+    # Papel de parede: o niri NAO desenha fundo nenhum sozinho — sem um cliente
+    # de wallpaper a area vaga fica PRETA. Na rice de referencia o wallpaper e
+    # metade do visual, entao swaybg entra como parte do stack, nao como enfeite.
+    [[ "$DESKTOP_WALLPAPER_TOOL" == "swaybg" ]] && printf '%s\n' gui-apps/swaybg
+
+    # fastfetch: e a peca central do terminal na referencia (logo do Gentoo em
+    # ASCII + blocos de info). Verificado como app-misc/fastfetch no ::gentoo.
+    [[ "$DESKTOP_INSTALL_FASTFETCH" == "yes" ]] && printf '%s\n' app-misc/fastfetch
+
+    # Editor: a referencia mostra neovim. Opcional — quem ja tem o seu desliga.
+    [[ "$DESKTOP_INSTALL_NEOVIM" == "yes" ]] && printf '%s\n' app-editors/neovim
+
     return 0
 }
 

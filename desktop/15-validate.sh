@@ -999,6 +999,31 @@ do_report() {
 
 log_info "==== validacao pre-reboot — usuario '$DESKTOP_USER', rota '$DESKTOP_SEAT_PROVIDER' ===="
 
+# Sob --dry-run paramos AQUI — e este e o unico numerado onde a guarda NAO
+# existe por causa de efeito colateral. As verificacoes daqui para baixo sao
+# todas somente-leitura (pkg_installed, stat, grep, `rc-update show`,
+# `rc-service status`): nenhum emerge, nenhuma escrita em /etc ou no $HOME,
+# nenhum servico habilitado ou iniciado. Rodar tudo isso num dry-run seria, em
+# si, inofensivo. A guarda esta aqui por DOIS motivos concretos:
+#
+#   1. ESTADO. As linhas finais gravam `mark_done 15-validate "ok"` ou apagam o
+#      marker com `clear_marker 15-validate`. E pouco, mas e disco, e --dry-run
+#      promete nao escrever nada — e um marker mentiroso aqui e pior que a
+#      media, porque ele afirma "esta maquina passou na validacao".
+#
+#   2. FALHA ESPURIA, que e a razao mais forte. Num dry-run nada foi instalado,
+#      nenhum servico foi habilitado e nenhuma USE foi escrita: as verificacoes
+#      reprovariam em bloco e o `die` do fim do arquivo mataria o script. Como a
+#      ORDEM_ETAPAS e (10 11 12 13 15 14), o orquestrador abortaria ali e a
+#      etapa 14 nunca apareceria no dry-run. O usuario receberia um relatorio de
+#      desastre logo depois de ler "nenhuma config sera escrita" — assustador,
+#      inutil e falso, porque o que ele mediu foi o sistema que ele ja tinha, e
+#      nao o resultado do modulo.
+#
+# Validar de verdade exige o sistema de verdade: rode este script sem --dry-run,
+# depois que as etapas 10 a 13 tiverem rodado.
+dry_run_guard 15-check-egl 15-check-seat 15-check-session-files 15-report
+
 run_step 15-check-egl           probe_check_egl           do_check_egl
 run_step 15-check-seat          probe_check_seat          do_check_seat
 run_step 15-check-session-files probe_check_session_files do_check_session_files

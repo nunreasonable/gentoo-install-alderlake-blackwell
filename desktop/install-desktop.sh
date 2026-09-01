@@ -673,6 +673,26 @@ print_summary() {
         start_cmd="niri-session   # (systemd; caminho NUNCA validado neste projeto)"
     fi
 
+    # Sob --dry-run o resumo normal seria a mesma promessa falsa que a flag ja
+    # tinha: nenhuma etapa foi CONCLUIDA, nada foi instalado, e mandar o usuario
+    # iniciar a sessao levaria direto a uma tela preta. Dizemos o que de fato
+    # aconteceu — os numerados apenas listaram o plano e sairam — e paramos.
+    if [[ "$DRY_RUN" == "yes" ]]; then
+        log_info "=================================================================="
+        log_info "--dry-run: NADA foi alterado neste sistema."
+        log_info "=================================================================="
+        log_info ""
+        log_info "As etapas percorridas (${ETAPAS_A_RODAR[*]}) apenas imprimiram as"
+        log_info "sub-etapas que executariam. Nenhum emerge rodou, nenhuma config foi"
+        log_info "escrita, nenhum servico foi habilitado e nenhum dotfile foi criado."
+        log_info ""
+        log_info "Para executar de verdade, repita o comando SEM --dry-run."
+        log_info ""
+        log_info "Log completo desta execucao:"
+        log_info "    ${LOGFILE:-/var/log/gentoo-install/install-desktop.log}"
+        return 0
+    fi
+
     log_info "=================================================================="
     log_info "Modulo de desktop: etapas concluidas (${ETAPAS_A_RODAR[*]})"
     log_info "=================================================================="

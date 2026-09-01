@@ -116,7 +116,55 @@ export TARGET_ROOT=""
 # estiver errado. O terminal e a ferramenta de RECUPERACAO: ele nao pode
 # depender do subsistema que estamos testando. Se o niri subir e o foot
 # funcionar, voce tem um terminal para diagnosticar o resto.
+#
+# NOTA sobre a rice de referencia: ela usa KITTY. Mas roda num Apple M2 com
+# Asahi, onde o caminho GPU e conhecido e estavel — nao numa Blackwell com
+# driver proprietario que este projeto nunca viu funcionar.
+# Recomendacao: instale com foot, CONFIRME que a sessao sobe, e so entao troque:
+#     DESKTOP_TERMINAL=kitty ./desktop/install-desktop.sh --only 14
+# Se o kitty abrir preto ou nao abrir, o problema e EGL/GBM da NVIDIA — e voce
+# ainda tem o foot para investigar.
 : "${DESKTOP_TERMINAL:=foot}"
+
+# ---------------------------------------------------------------------------
+# Aparencia (a "rice")
+# ---------------------------------------------------------------------------
+
+# Ferramenta de papel de parede: swaybg | none
+#
+# O niri NAO desenha fundo: sem um cliente de wallpaper a area vaga fica PRETA.
+# swaybg e o mais simples e nao usa GPU alem do necessario.
+# (gui-apps/swww, mais bonito por causa das transicoes, NAO existe no ::gentoo —
+# verificado; entao nao e oferecido aqui.)
+: "${DESKTOP_WALLPAPER_TOOL:=swaybg}"
+
+# Caminho da imagem de papel de parede. VAZIO = nenhum wallpaper e configurado
+# e a etapa 14 apenas avisa onde coloca-lo.
+#
+# A rice de referencia usa uma arte "Gentoo-chan" em tons de roxo, que casa com
+# a paleta Catppuccin Mocha (mauve). Esse arquivo NAO acompanha este repositorio
+# — e arte de terceiros, sem licenca declarada para redistribuicao. Baixe a sua
+# e aponte aqui. Sugestao de local: ~/.local/share/wallpapers/
+: "${DESKTOP_WALLPAPER:=}"
+
+# Modo de escala do swaybg: fill | fit | stretch | center | tile
+# "fill" preserva proporcao e cobre a tela (recorta o excedente).
+: "${DESKTOP_WALLPAPER_MODE:=fill}"
+
+# Cor de fundo usada quando nao ha wallpaper, ou nas bordas com mode=fit.
+# Default = base do Catppuccin Mocha, para nao dar preto puro na tela.
+: "${DESKTOP_WALLPAPER_COLOR:=1e1e2e}"
+
+# Cantos arredondados das janelas, em pixels. 0 desliga.
+# Sintaxe verificada no default-config.kdl do upstream do niri:
+# window-rule { geometry-corner-radius N; clip-to-geometry true }
+: "${DESKTOP_CORNER_RADIUS:=12}"
+
+# fastfetch: e a peca central do terminal na rice de referencia. (yes|no)
+: "${DESKTOP_INSTALL_FASTFETCH:=yes}"
+
+# neovim: a referencia usa. Desligue se voce ja tem o seu editor. (yes|no)
+: "${DESKTOP_INSTALL_NEOVIM:=no}"
 
 # Lancador de aplicativos: fuzzel
 #

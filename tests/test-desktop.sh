@@ -665,6 +665,133 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 10b. CONTRATO DO --dry-run
+# ---------------------------------------------------------------------------
+#
+# A REGRESSAO QUE ESTA SECAO IMPEDE: o orquestrador aceita --dry-run, anuncia
+# que "nenhum emerge sera executado e nenhuma config sera escrita" e repassa
+# DESKTOP_DRY_RUN=yes por ambiente. Honrar a variavel e responsabilidade de
+# CADA numerado — e houve um periodo em que so a 10a a consultava. Nesse
+# periodo o --dry-run rodava emerge de verdade, escrevia /etc/portage,
+# habilitava servicos com rc-update e gravava dotfiles no $HOME. Uma flag cujo
+# proposito e seguranca prometendo o contrario do que faz.
+#
+# Os numerados 10-15 usam a guarda unica dry_run_guard (sai com 0, para o
+# dry-run percorrer o modulo inteiro). A 10a e a excecao deliberada: ela guarda
+# inline, colada no eselect/emerge, com die.
+
+# Numerados que usam a guarda unica no topo da secao de execucao.
+DRY_GUARDED=(10-portage-desktop.sh 11-nvidia-wayland.sh 12-niri-stack.sh
+             13-services.sh 14-dotfiles.sh 15-validate.sh)
+
+# dry_run_guard_args <arquivo>: os nomes de sub-etapa passados ao dry_run_guard,
+# um por linha. O `sed` de rotulo junta as continuacoes com barra invertida
+# antes de separar, porque as chamadas mais longas ocupam duas linhas.
+dry_run_guard_args() {
+    sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' "$1" \
+        | grep -E '^dry_run_guard[[:space:]]' \
+        | head -n1 | sed 's/^dry_run_guard[[:space:]]*//' \
+        | tr -s '[:space:]' '\n' | grep -v '^$'
+}
+
+# run_step_names <arquivo>: os nomes de sub-etapa realmente executados.
+run_step_names() { grep -E '^run_step[[:space:]]' "$1" | awk '{print $2}'; }
+
+# A biblioteca oferece a guarda, e ela sai com 0 em vez de morrer. Se alguem a
+# "consertar" trocando o exit por die, o --dry-run volta a abortar na etapa 10 e
+# nunca mostra a 11-15 — o teste existe para pegar exatamente essa troca.
+if declare -f >/dev/null 2>&1 && grep -qE '^dry_run_guard\(\) \{' "$LIBD"; then
+    ok "lib-desktop.sh define dry_run_guard"
+    guard_body="$(extract_fn "$LIBD" dry_run_guard)"
+    assert_contains "$guard_body" 'DESKTOP_DRY_RUN' "dry_run_guard consulta DESKTOP_DRY_RUN"
+    assert_contains "$guard_body" 'exit 0' "dry_run_guard sai com 0 (deixa o orquestrador seguir para a proxima etapa)"
+    assert_not_contains "$guard_body" 'die ' "dry_run_guard nao usa die (die abortaria o dry-run na primeira etapa)"
+else
+    no "lib-desktop.sh define dry_run_guard" "sem ela nenhum numerado honra o --dry-run"
+fi
+
+for b in "${DRY_GUARDED[@]}"; do
+    f="$DESKTOP_DIR/$b"
+    [[ -f "$f" ]] || { no "$b honra DESKTOP_DRY_RUN" "arquivo ausente"; continue; }
+
+    # 1. A guarda existe e vem ANTES do primeiro run_step. Depois seria tarde:
+    #    o primeiro run_step ja executa o do_fn, que e onde mora o efeito.
+    g="$(grep -nE '^dry_run_guard[[:space:]]' "$f" | head -n1 | cut -d: -f1)"
+    r="$(grep -nE '^run_step[[:space:]]'      "$f" | head -n1 | cut -d: -f1)"
+    if [[ -n "$g" && -n "$r" ]] && (( g < r )); then
+        ok "$b chama dry_run_guard antes do primeiro run_step (linha $g < $r)"
+    else
+        no "$b chama dry_run_guard antes do primeiro run_step" \
+           "dry_run_guard na linha '${g:-nenhuma}', primeiro run_step na linha '${r:-nenhuma}'"
+    fi
+
+    # 2. A lista anunciada e a lista executada tem de ser a MESMA, na mesma
+    #    ordem. Sem isto o dry-run vira documentacao que envelhece sozinha:
+    #    alguem acrescenta um run_step e o plano impresso passa a mentir por
+    #    omissao — justamente no comando que o usuario roda para se informar.
+    anunciadas="$(dry_run_guard_args "$f")"
+    executadas="$(run_step_names "$f")"
+    if [[ "$anunciadas" == "$executadas" ]]; then
+        ok "$b anuncia no dry_run_guard exatamente as sub-etapas que executa"
+    else
+        no "$b anuncia no dry_run_guard exatamente as sub-etapas que executa" \
+           "anunciadas: [$(tr '\n' ' ' <<< "$anunciadas")] vs executadas: [$(tr '\n' ' ' <<< "$executadas")]"
+    fi
+done
+
+# A 10a guarda inline, colada no efeito, com die — padrao diferente e proposital
+# (ver o comentario do dry_run_guard). O que nao pode e a guarda sumir.
+PW="$DESKTOP_DIR/10a-profile-world.sh"
+if [[ -f "$PW" ]]; then
+    n_guardas="$(grep -cE 'DESKTOP_DRY_RUN' "$PW" || true)"
+    if (( n_guardas >= 2 )); then
+        ok "10a-profile-world.sh mantem as guardas inline de DESKTOP_DRY_RUN ($n_guardas referencias)"
+    else
+        no "10a-profile-world.sh mantem as guardas inline de DESKTOP_DRY_RUN" \
+           "encontrei $n_guardas referencia(s); esperado ao menos 2 (troca de perfil e emerge @world)"
+    fi
+fi
+
+# A ASERCAO CENTRAL, e a que resume a regressao: todo numerado que executa
+# emerge tem de honrar DESKTOP_DRY_RUN. Sem ela, um script novo (ou um refactor
+# que remova a guarda) volta a compilar durante um --dry-run.
+#
+# "Honrar" vale das DUAS formas legitimas: a guarda unica dry_run_guard (10-15)
+# ou a consulta inline a variavel (10a). Exigir o literal DESKTOP_DRY_RUN em
+# todo arquivo puniria justamente o refactor que centralizou a guarda.
+#
+# CUIDADO DE IMPLEMENTACAO — nao troque este `grep -E ... || true` por um
+# `grep -q` dentro de pipe: com o `set -o pipefail` do topo deste arquivo, o
+# grep -q sai no primeiro casamento, o SIGPIPE mata o `grep -v` do strip_noise e
+# o status 141 vaza para o `if`. O teste passa a reportar "nao executa emerge"
+# de forma dependente de buffering — verde por acidente, que e pior que vermelho.
+# Os demais testes deste arquivo usam este mesmo padrao pelo mesmo motivo.
+for f in "${DESKTOP_ACTION[@]}"; do
+    b="$(basename "$f")"
+    [[ "$b" == "install-desktop.sh" ]] && continue
+    hits="$(strip_noise "$f" | grep -nE '(^|[^[:alnum:]_./-])emerge([[:space:]]|$)' || true)"
+    if [[ -z "$hits" ]]; then
+        ok "$b nao executa emerge (nada a guardar contra o --dry-run)"
+        continue
+    fi
+    if grep -qE '(DESKTOP_DRY_RUN|^dry_run_guard[[:space:]])' "$f"; then
+        ok "$b executa emerge E honra DESKTOP_DRY_RUN"
+    else
+        no "$b executa emerge E honra DESKTOP_DRY_RUN" \
+           "o --dry-run compilaria de verdade neste script"
+    fi
+done
+
+# O outro lado da plumbing: se o orquestrador parar de repassar a variavel, as
+# guardas dos numerados ficam corretas e inertes ao mesmo tempo.
+if grep -q 'DESKTOP_DRY_RUN=\$DRY_RUN' "$ORQ"; then
+    ok "install-desktop.sh repassa DESKTOP_DRY_RUN aos numerados"
+else
+    no "install-desktop.sh repassa DESKTOP_DRY_RUN aos numerados" \
+       "sem o repasse as guardas dos numerados nunca disparam"
+fi
+
+# ---------------------------------------------------------------------------
 # 11. HIGIENE DE SHELL
 # ---------------------------------------------------------------------------
 # set -euo pipefail em todo script executavel (contrato do projeto).
