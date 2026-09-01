@@ -56,12 +56,8 @@ FALLBACK_LOCALE_LINE="en_US.UTF-8 UTF-8"
 # Helpers locais (somente leitura — usados pelos probes)
 # ---------------------------------------------------------------------------
 
-# eselect_current_profile: imprime o perfil corrente (linha 2 do `show`, sem
-# espacos ao redor). Vazio se nenhum perfil definido.
-eselect_current_profile() {
-    eselect profile show 2>/dev/null \
-        | awk 'NR==2 {gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print}'
-}
+# current_profile / eselect_profile_show vivem no lib.sh (sao sourceaveis, e por
+# isso testaveis sem chroot). Ver a secao "Perfil do Portage" la.
 
 # normalize_locale <nome>: normaliza para comparacao — o glibc registra
 # "pt_BR.UTF-8" como "pt_BR.utf8" em `locale -a` (minusculas, sem hifen).
@@ -80,6 +76,15 @@ locale_generated() {
 
 # eselect_current_locale: imprime o LANG corrente segundo o eselect
 # (linha 2 do `eselect locale show`, sem espacos ao redor).
+#
+# DIVIDA CONSCIENTE: isto parseia a UI do eselect, do mesmo jeito que o probe de
+# perfil fazia antes de migrar para o symlink canonico. Nao foi migrado junto
+# porque a fonte canonica de locale DEPENDE DO INIT (/etc/env.d/02locale no
+# OpenRC, /etc/locale.conf no systemd) e o caminho OpenRC ja esta validado em
+# QEMU — trocar aqui arriscaria uma regressao sem bug concreto que a justifique.
+# Mitigacao: este e o ULTIMO dos quatro testes de probe_locale; os tres
+# anteriores (duas linhas em locale.gen + locale_generated dos dois locales) sao
+# funcionais e nao dependem de formato de saida.
 eselect_current_locale() {
     eselect locale show 2>/dev/null \
         | awk 'NR==2 {gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print}'
@@ -218,14 +223,24 @@ report_news_items
 # Handbook: "Choosing the right profile"
 # ---------------------------------------------------------------------------
 
-# Probe: o symlink /etc/portage/make.profile aponta para o perfil desejado.
+# Probe: o symlink /etc/portage/make.profile resolve para o perfil desejado.
+# Autoridade = o symlink (fonte canonica), nao a saida do eselect.
 probe_profile() {
-    [[ "$(eselect_current_profile)" == "$TARGET_PROFILE" ]]
+    local cur
+    cur="$(current_profile)" || return 1
+    [[ "$cur" == "$TARGET_PROFILE" ]]
 }
 
 do_profile() {
     # Por NOME exato — nunca por numero (numeracao instavel entre snapshots).
     eselect profile set "$TARGET_PROFILE"
+    # Verificar DEPOIS de aplicar (invariante 6), pela fonte canonica: o
+    # eselect pode sair 0 e ainda assim deixar o symlink em outro lugar.
+    local cur
+    cur="$(current_profile)" \
+        || die "apos 'eselect profile set $TARGET_PROFILE', /etc/portage/make.profile nao existe ou nao resolve. eselect diz: $(eselect_profile_show)"
+    [[ "$cur" == "$TARGET_PROFILE" ]] \
+        || die "perfil errado apos o set: /etc/portage/make.profile resolve para '$cur', esperado '$TARGET_PROFILE'. eselect diz: $(eselect_profile_show)"
 }
 
 run_step 03-profile probe_profile do_profile
@@ -334,12 +349,11 @@ do_fstab() {
     [[ -n "$efi_uuid" && -n "$swap_uuid" && -n "$root_uuid" ]] \
         || die "blkid nao retornou UUID para alguma particao — rode 00-partition.sh (mkfs) antes"
     # O tipo REAL do filesystem da raiz e a autoridade (nao a variavel).
-    root_type="$(blkid -s TYPE -o value "$ROOT_PART")"
-    [[ -n "$root_type" ]] \
+    # root_fs_actual (lib.sh) e a MESMA funcao que o 06 usa para decidir sobre
+    # xfsprogs — as duas etapas precisam concordar sobre o que a raiz e.
+    root_type="$(root_fs_actual)" \
         || die "blkid nao retornou TYPE para $ROOT_PART — a raiz foi formatada?"
-    if [[ "$root_type" != "$ROOT_FS" ]]; then
-        log_warn "ROOT_FS='$ROOT_FS' em vars.sh, mas $ROOT_PART esta formatada como '$root_type' — usando o tipo real no fstab"
-    fi
+    warn_root_fs_mismatch "$root_type"
     # Reescreve o fstab inteiro (o do stage3 so tem exemplos comentados);
     # regenerar por completo e o que garante a idempotencia.
     {

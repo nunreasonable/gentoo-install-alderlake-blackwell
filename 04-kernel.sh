@@ -625,7 +625,10 @@ run_step 04-sources      probe_sources      do_sources
 run_step 04-kernel-build probe_kernel_build do_kernel_build
 
 if [[ "$NVIDIA_MODE" == "skip" ]]; then
-    log_info "NVIDIA_MODE=skip — sub-etapa 04-nvidia pulada por configuracao"
+    # skip = OMISSAO, nunca remocao. Nada de nvidia e instalado, configurado ou
+    # testado — e nada existente e desinstalado ou alterado. Um sistema que ja
+    # tenha o driver continua exatamente como estava.
+    log_info "NVIDIA_MODE=skip — sub-etapa 04-nvidia pulada por configuracao (nada e instalado nem removido)"
 else
     run_step 04-nvidia probe_nvidia do_nvidia
 fi

@@ -27,6 +27,11 @@ source "$SCRIPT_DIR/lib.sh"
 init_logging 06-users-services
 require_phase chroot
 validate_vars
+# Define EFI_PART/SWAP_PART/ROOT_PART. Necessario porque 06-fs-tools consulta o
+# filesystem REAL da raiz (root_fs_actual usa $ROOT_PART) para decidir sobre
+# xfsprogs — sem isto o script morreria com "unbound variable" sob set -u.
+# Mesmo padrao do 03 e do 05.
+compute_partitions
 
 # ---------------------------------------------------------------------------
 # Helpers locais (sem efeito colateral — usados pelos probes)
@@ -365,22 +370,36 @@ fi
 # 06-fs-tools — Handbook: Installing system tools -> Filesystem tools
 # Ferramentas de userspace dos filesystems usados: sys-fs/dosfstools SEMPRE
 # (a ESP e vfat e o fstab do 03 lhe da passno 2 — sem fsck.vfat o fsck do
-# primeiro boot falha e /efi nao monta) e sys-fs/xfsprogs quando ROOT_FS=xfs
+# primeiro boot falha e /efi nao monta) e sys-fs/xfsprogs quando a raiz E xfs
 # (fsck.xfs/xfs_repair para a raiz, passno 1). O e2fsprogs (ext4) ja vem no
 # @system do stage3. Vale para os DOIS inits — roda fora do bloco OpenRC.
+#
+# "a raiz E xfs" = root_fs_actual (blkid na particao), NAO a variavel ROOT_FS.
+# Mesma autoridade que o 03 usa para montar o fstab; as duas etapas nao podem
+# discordar sobre o filesystem da raiz.
 # ---------------------------------------------------------------------------
 
 probe_fs_tools() {
+    local actual
     pkg_installed sys-fs/dosfstools || return 1
-    if [[ "$ROOT_FS" == "xfs" ]]; then
+    # Autoridade e o filesystem REAL da raiz, nao a variavel ROOT_FS: com
+    # ROOT_FS=ext4 e a particao formatada em xfs, decidir pela variavel deixaria
+    # o sistema sem fsck.xfs/xfs_repair para uma raiz com passno 1.
+    # Fail-closed no probe: indeterminado => reporta nao-feito (nao mata o
+    # script; quem morre e o do_fn, que e onde a decisao importa).
+    actual="$(root_fs_actual)" || return 1
+    if [[ "$actual" == "xfs" ]]; then
         pkg_installed sys-fs/xfsprogs || return 1
     fi
     return 0
 }
 
 do_fs_tools() {
-    local pkgs=(sys-fs/dosfstools)
-    if [[ "$ROOT_FS" == "xfs" ]]; then
+    local pkgs=(sys-fs/dosfstools) actual
+    actual="$(root_fs_actual)" \
+        || die "nao foi possivel determinar o filesystem real de $ROOT_PART (blkid sem TYPE) — a escolha das ferramentas de filesystem depende disso; verifique se a raiz esta formatada e visivel no chroot"
+    warn_root_fs_mismatch "$actual"
+    if [[ "$actual" == "xfs" ]]; then
         pkgs+=(sys-fs/xfsprogs)
     fi
     emerge --quiet "${pkgs[@]}"

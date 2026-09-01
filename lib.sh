@@ -511,6 +511,146 @@ clear_marker() {
     rm -f "$(state_dir)/$1"
 }
 
+# ---------------------------------------------------------------------------
+# Identidade do state (schema + commit do installer que o produziu)
+# ---------------------------------------------------------------------------
+#
+# Motivacao: o state sobrevive a reboots e a `--reset`, e nada o amarrava a
+# versao do installer que o gerou. Um state produzido pela versao A podia ser
+# consumido pela versao B sem nenhum aviso.
+#
+# STATE_SCHEMA muda SO quando o FORMATO do state muda de um jeito que a versao
+# anterior nao entende (nome/semantica de marker, layout do diretorio). Trocar
+# de commit NAO e motivo para incrementar.
+STATE_SCHEMA=1
+
+# installer_commit: identidade da arvore de codigo em execucao.
+# Retorna o commit curto quando o diretorio do script E um checkout git, com
+# sufixo -dirty se ha modificacoes nao commitadas. Fora de um checkout (o caso
+# normal DENTRO do chroot, onde so os scripts foram copiados) devolve
+# "nao-versionado" — nunca inventa um SHA.
+installer_commit() {
+    local dir="${SCRIPT_DIR:-.}" c
+    if ! c="$(git -C "$dir" rev-parse --short=12 HEAD 2>/dev/null)" || [[ -z "$c" ]]; then
+        printf 'nao-versionado\n'
+        return 0
+    fi
+    if ! git -C "$dir" diff --quiet HEAD 2>/dev/null; then
+        c="$c-dirty"
+    fi
+    printf '%s\n' "$c"
+}
+
+# state_identity_check: confronta o state existente com o installer atual.
+#
+#   state ausente          -> grava a identidade e segue (primeira execucao)
+#   mesmo schema, mesmo commit  -> silencioso
+#   mesmo schema, commit difere -> AVISO, resume continua
+#   schema diferente       -> die (o formato mudou; resume seria adivinhacao)
+#   arquivo ilegivel/sem schema numerico -> die (fail-closed)
+#
+# Deliberadamente NAO destrutivo: nunca apaga state, nunca reformata. Na duvida
+# aborta e deixa a decisao com o operador.
+#
+# So faz sentido chamar depois que o alvo esta montado (o state vive no
+# filesystem alvo); os call sites estao no install.sh.
+state_identity_check() {
+    local dir f schema commit cur
+    dir="$(state_dir)"
+    f="$dir/.installer"
+    cur="$(installer_commit)"
+
+    if [[ ! -e "$f" ]]; then
+        mkdir -p "$dir"
+        printf 'schema=%s\ncommit=%s\n' "$STATE_SCHEMA" "$cur" > "$f"
+        return 0
+    fi
+
+    [[ -r "$f" ]] || die "state ilegivel: $f existe mas nao pode ser lido — corrija as permissoes ou remova o diretorio de state ($dir) para comecar limpo"
+
+    schema="$(sed -n 's/^schema=//p' "$f" | head -n1)"
+    commit="$(sed -n 's/^commit=//p' "$f" | head -n1)"
+
+    [[ "$schema" =~ ^[0-9]+$ ]] \
+        || die "state corrompido: $f nao declara um schema numerico (leu '${schema:-vazio}'). Remova $dir para comecar limpo — nenhuma etapa destrutiva sera repetida, porque os probes reexaminam o estado real do disco."
+
+    if (( schema != STATE_SCHEMA )); then
+        die "state INCOMPATIVEL: foi criado com schema $schema e este installer usa schema $STATE_SCHEMA. O formato do state mudou entre as duas versoes e retomar seria adivinhacao. Opcoes: (a) use a versao do installer que criou este state, ou (b) remova $dir e re-execute — os probes reexaminam o disco, entao nada ja feito e refeito."
+    fi
+
+    if [[ "$commit" != "$cur" ]]; then
+        log_warn "State foi criado pelo installer commit ${commit:-desconhecido}; o installer atual e $cur."
+        log_warn "Schema $schema e o mesmo, entao o resume CONTINUA normalmente — mas se o comportamento das etapas mudou entre as duas versoes, o estado ja gravado reflete a versao antiga."
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Filesystem real da raiz (autoridade sobre a variavel ROOT_FS)
+# ---------------------------------------------------------------------------
+#
+# ROOT_FS e a EXPECTATIVA declarada em vars.sh; o que esta gravado na particao
+# e o FATO. Os dois divergem sempre que alguem edita vars.sh depois do mkfs,
+# ou retoma uma instalacao antiga com outro valor.
+#
+# Quem decide com base em filesystem (fstab no 03, xfsprogs no 06) tem que usar
+# ESTA funcao, para as duas etapas concordarem. Imprime o tipo e retorna 0;
+# retorna 1 (sem imprimir) quando nao da para determinar — cabe ao chamador
+# decidir, e a regra do projeto e fail-closed: probe reporta nao-feito, do_fn
+# morre.
+root_fs_actual() {
+    local t
+    t="$(blkid -s TYPE -o value "$ROOT_PART" 2>/dev/null)" || t=""
+    [[ -n "$t" ]] || return 1
+    printf '%s\n' "$t"
+}
+
+# warn_root_fs_mismatch: aviso unico e uniforme quando a expectativa diverge do
+# fato. Nao decide nada — so relata. Silencioso quando batem.
+warn_root_fs_mismatch() {
+    local actual="$1"
+    [[ "$actual" == "$ROOT_FS" ]] && return 0
+    log_warn "ROOT_FS='$ROOT_FS' em vars.sh, mas $ROOT_PART esta formatada como '$actual' — o tipo REAL manda; nada sera reformatado"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Perfil do Portage (usado pelo 03; vive aqui para ser sourceavel e testavel)
+# ---------------------------------------------------------------------------
+
+# current_profile [caminho-do-make.profile]: perfil corrente pela fonte
+# CANONICA — o alvo real do symlink /etc/portage/make.profile, que e o que o
+# portage de fato le.
+#
+# NAO parseamos `eselect profile show`: a saida dele e apresentacao (cabecalho,
+# indentacao, marcador do selecionado) e depender da POSICAO das linhas
+# transforma texto decorativo em API. O symlink e a estrutura de verdade.
+#
+# Imprime o perfil no formato do eselect (ex.: default/linux/amd64/23.0), que e
+# o trecho apos ".../profiles/". Retorna 1 sem imprimir quando o symlink nao
+# existe ou nao resolve — fail-closed: o probe reporta nao-feito.
+#
+# O argumento opcional existe so para os testes apontarem para uma arvore
+# temporaria; em producao ninguem passa nada.
+current_profile() {
+    local link="${1:-/etc/portage/make.profile}" target
+    target="$(readlink -f "$link" 2>/dev/null)" || return 1
+    [[ -n "$target" && -d "$target" ]] || return 1
+    if [[ "$target" == */profiles/* ]]; then
+        printf '%s\n' "${target#*/profiles/}"
+    else
+        # Perfil fora de um repo com layout padrao: devolve o caminho absoluto,
+        # que nao vai casar com TARGET_PROFILE — e reprovar aqui e o certo.
+        printf '%s\n' "$target"
+    fi
+}
+
+# eselect_profile_show: SOMENTE para mensagem de diagnostico. Nao e autoridade
+# e nenhum probe decide com base nisto.
+eselect_profile_show() {
+    eselect profile show 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//'
+}
+
 # run_step <nome> <probe_fn> <do_fn>: executor idempotente de sub-etapa.
 #
 # SEMANTICA CRITICA — o probe e a autoridade:

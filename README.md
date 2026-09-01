@@ -31,7 +31,7 @@ Esta secao e a informacao mais importante do repositorio. Ela e literal.
 | `bash -n` (sintaxe) em todos os scripts | **Passou** |
 | ShellCheck (container, repo montado read-only) | **Passou** |
 | Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
-| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 17 asercoes |
+| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 131 asercoes em 8 grupos |
 
 ### Execucao em QEMU/OVMF — **completa, com boot** (2026-09-01)
 
@@ -348,9 +348,39 @@ na fase live, 03–06 so dentro do chroot.
 | `tests/run-in-qemu-guest.sh` | VM | Roda o instalador dentro da VM com o perfil acima; recusa rodar se nao detectar virtualizacao |
 | `tests/test-qemu-profile.sh` | host | Prova que o perfil usa `/dev/vda`, que o default de producao segue NVMe e que nao ha autodeteccao nem fallback de disco |
 | `tests/test-target-disk-required.sh` | host | Prova que `TARGET_DISK` ausente/invalido causa falha dura, sem eleger outro disco |
+| `tests/test-safety.sh` | host | `TARGET_ROOT` canonicalizado, `AUTO_CONFIRM` nao bypassa o REFORMAT, preflight antes de tudo que destroi, guardas de mount por `findmnt` |
+| `tests/test-secrets.sh` | host | Hashes de senha nao ficam no `vars.sh` persistente; `secrets.env` 0600, removido ao final |
+| `tests/test-state-version.sh` | host | Identidade do state (schema + commit): mesmo commit, commit diferente, schema incompativel, state corrompido/ausente |
+| `tests/test-root-fs.sh` | host | Filesystem REAL da raiz manda sobre `ROOT_FS`; 03 e 06 usam a mesma autoridade |
+| `tests/test-profile-detection.sh` | host | Perfil vem do symlink canonico, nao da posicao das linhas do `eselect` |
+| `tests/test-all-vars.sh` | host | Toda variavel de `vars.sh` atravessa para o chroot (`ALL_VARS` + `SECRET_VARS`) |
+| `tests/test-steps-invariants.sh` | host | Flags de resume, sentinela do sync, `NVIDIA_MODE=skip` como omissao, branch systemd |
 
-A suite do host cobre **configuracao e guardas de disco**, nao comportamento de
-runtime. Nenhum teste particiona, monta, baixa ou compila coisa alguma.
+A suite do host cobre **configuracao, guardas de disco e invariantes de
+estado** — nao comportamento de runtime. Nenhum teste particiona, monta, baixa
+ou compila coisa alguma. Um teste estatico que passa **nao** significa que a
+etapa correspondente foi validada; significa que a propriedade que ele afirma
+continua verdadeira no codigo.
+
+### Senhas e material sensivel
+
+Os hashes de `ROOT_PASSWORD_HASH`/`USER_PASSWORD_HASH` **nao** ficam no
+`vars.sh` que sobra em `/root/gentoo-install/` do sistema instalado. Eles vao
+para um `secrets.env` ao lado, com modo `0600`, que o `vars.sh` gerado carrega
+quando existe — e que e **removido ao final da instalacao**.
+
+Consequencias praticas:
+
+- Uma instalacao interrompida **mantem** o `secrets.env` (o resume
+  nao-interativo continua funcionando). Ele so e removido no caminho de
+  sucesso do fluxo completo.
+- Se voce abortar de vez uma instalacao com hashes configurados, remova o
+  arquivo a mao: `rm -f /mnt/gentoo/root/gentoo-install/secrets.env`.
+- Sem `secrets.env`, o `vars.sh` continua sourceavel e as etapas caem no
+  `passwd` interativo — que e o comportamento padrao do projeto.
+- O `vars.sh` do **seu** diretorio de trabalho e seu: se voce escreveu hashes
+  ali, eles continuam ali. O instalador so cuida do que ele proprio escreve no
+  alvo.
 
 ---
 
@@ -389,6 +419,20 @@ runtime. Nenhum teste particiona, monta, baixa ou compila coisa alguma.
 - **Invalidacao automatica:** editar `kernel-fragment.config` muda o hash e
   forca rebuild; rebuild invalida nvidia e grub.cfg; reparticionar invalida o
   fstab e o `root=PARTUUID`.
+- **Identidade do state.** O state guarda quem o produziu, em
+  `.../state/.installer` (`schema=` + `commit=`). Ao retomar:
+
+  | Situacao | O que acontece |
+  |---|---|
+  | Mesmo commit | Silencio, resume normal |
+  | Commit diferente, mesmo schema | **Aviso** citando os dois commits; resume continua |
+  | Schema diferente | **Aborta** — o formato do state mudou e retomar seria adivinhacao |
+  | `.installer` corrompido ou sem `schema=` | **Aborta** (fail-closed) |
+
+  Nenhum desses caminhos apaga state. Se voce precisar comecar limpo, remova o
+  diretorio de state a mao: os probes reexaminam o disco, entao nada que ja
+  esta feito e refeito. Fora de um checkout git (o caso dentro do chroot) o
+  commit e registrado como `nao-versionado` — o instalador nunca inventa um SHA.
 - Logs: tela **e** `/var/log/gentoo-install/<script>.log` no alvo (o log do 00
   comeca em `/tmp` e e anexado apos o mount).
 - Ao final do fluxo completo com sucesso, o workdir do stage3 e removido. Um

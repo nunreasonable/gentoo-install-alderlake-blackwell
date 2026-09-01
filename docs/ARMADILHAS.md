@@ -5,8 +5,9 @@ pode dar errado, **como verificar ANTES** (comando exato + saida esperada) e o
 que fazer quando der errado.
 
 Le-se na ordem. As secoes 1–4 sao **antes de rodar o instalador**, as 5–7 sao
-**antes do primeiro reboot**, as 8–12 sao **no primeiro boot**, e a 13 e
-**recuperacao**.
+**antes do primeiro reboot**, as 8–12 sao **no primeiro boot**, e as 13–15 sao
+**recuperacao e limpeza** (retomar apos falha, hashes de senha que sobram,
+retomar com outra versao do instalador).
 
 > **Regra de ouro deste projeto:** nada aqui foi executado em hardware real.
 > Mantenha SEMPRE um live USB gravado e testado ao alcance, e **nao apague a
@@ -640,3 +641,98 @@ O `root=PARTUUID=` do GRUB ficou obsoleto. Regrave:
 Se o script abortar dizendo que **o kernel nao releu a tabela de particoes**,
 **NAO force**. Reinicie o live ISO e re-execute. Insistir sobre a geometria
 antiga corrompe dados.
+
+---
+
+## 14. Hashes de senha: o que sobra depois de uma instalacao abortada
+
+**O que pode dar errado:** se voce configurou `ROOT_PASSWORD_HASH` ou
+`USER_PASSWORD_HASH` em `vars.sh`, o instalador transporta esses hashes para o
+alvo num arquivo separado, `secrets.env`, com modo `0600`. Ele e removido
+automaticamente **no fim de uma instalacao completa e bem-sucedida**.
+
+Numa instalacao que voce **abortou no meio**, o arquivo continua la — de
+proposito, para o resume nao-interativo funcionar. Se voce desistiu de vez
+daquele alvo, ele fica esquecido.
+
+**Verifique** (do live ISO, com o alvo montado):
+
+```sh
+ls -l /mnt/gentoo/root/gentoo-install/secrets.env
+```
+
+Saida esperada numa instalacao concluida: `No such file or directory`.
+
+Se existir e voce nao vai retomar, remova:
+
+```sh
+rm -f /mnt/gentoo/root/gentoo-install/secrets.env
+```
+
+**No sistema ja instalado e bootado**, confira que nada sensivel sobrou:
+
+```sh
+grep -l 'PASSWORD_HASH' /root/gentoo-install/* 2>/dev/null
+ls -l /root/gentoo-install/secrets.env 2>/dev/null
+```
+
+Ambos devem sair vazios. O `vars.sh` que fica em `/root/gentoo-install/`
+**nao** contem hashes — ele so declara os nomes com valor vazio.
+
+**Nota:** o `vars.sh` do **seu** diretorio de trabalho (de onde voce rodou o
+instalador) e seu. Se voce escreveu hashes ali, eles continuam ali; o
+instalador so gerencia o que ele proprio escreve no alvo.
+
+---
+
+## 15. Retomar com uma versao diferente do instalador
+
+**O que pode dar errado:** voce comeca a instalacao, faz `git pull` (ou troca de
+branch), e retoma. O state no disco foi produzido por uma versao do codigo e
+esta sendo consumido por outra.
+
+O instalador detecta e reage conforme a gravidade — ele **nunca apaga o state
+sozinho**.
+
+**Commit diferente, mesmo formato de state** — voce vai ver:
+
+```
+[AVISO] State foi criado pelo installer commit abc123...; o installer atual e def456...
+[AVISO] Schema 1 e o mesmo, entao o resume CONTINUA normalmente — mas se o
+        comportamento das etapas mudou entre as duas versoes, o estado ja
+        gravado reflete a versao antiga.
+```
+
+Isso e **informativo**. Na pratica e o caso normal deste projeto: voce puxa uma
+correcao e retoma. Se a correcao mudou o comportamento de uma etapa **ja
+marcada como feita**, considere forcar aquela etapa com `--only N`.
+
+**Schema diferente** — o instalador **aborta**:
+
+```
+[ERRO] state INCOMPATIVEL: foi criado com schema N e este installer usa schema M.
+```
+
+Aqui o formato do state mudou entre as versoes e retomar seria chute. Duas
+saidas: use a versao que criou o state, ou remova o diretorio de state e
+re-execute.
+
+```sh
+rm -rf /mnt/gentoo/var/lib/gentoo-install/state
+```
+
+Remover o state **nao** refaz nada que ja esta pronto: os probes reexaminam o
+disco (particoes, filesystems, stage3 extraido, kernel em `/boot`) e pulam o que
+ja existe. O unico custo real e o `nvidia-drivers`, que reinstala em minutos.
+
+**State corrompido** (arquivo `.installer` ilegivel ou sem `schema=`) — aborta
+tambem, pelo mesmo motivo e com a mesma saida.
+
+Para ver quem produziu o state atual:
+
+```sh
+cat /mnt/gentoo/var/lib/gentoo-install/state/.installer
+```
+
+Dentro do chroot os scripts nao estao num checkout git, entao o commit aparece
+como `nao-versionado`. Isso e esperado — o instalador nao inventa um SHA.

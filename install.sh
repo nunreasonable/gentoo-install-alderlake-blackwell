@@ -29,15 +29,19 @@ source "$SCRIPT_DIR/lib.sh"
 # Dentro do chroot o mesmo diretorio e /root/gentoo-install (== SCRIPT_DIR).
 TARGET_SCRIPTS_DIR_REL="/root/gentoo-install"
 
-# Lista COMPLETA das variaveis de vars.sh — usada para gerar o vars.sh
-# "assado" (com valores efetivos) que atravessa para o chroot.
+# Variaveis NAO-SENSIVEIS de vars.sh — usadas para gerar o vars.sh "assado"
+# (com valores efetivos) que atravessa para o chroot.
+#
+# As variaveis com material sensivel ficam em SECRET_VARS (definida junto de
+# write_effective_vars). ALL_VARS + SECRET_VARS tem que cobrir vars.sh inteiro;
+# tests/test-all-vars.sh guarda essa invariante.
 ALL_VARS=(
     TARGET_DISK EFI_SIZE SWAP_SIZE ROOT_SIZE ROOT_FS TARGET_ROOT
     TARGET_HOSTNAME TIMEZONE KEYMAP LOCALE INIT_SYSTEM
     MAKEOPTS CFLAGS_ARCH
     MIRROR RELENG_KEY_FPR
     NVIDIA_MIN_VER NVIDIA_MODE
-    USERNAME USER_GROUPS ROOT_PASSWORD_HASH USER_PASSWORD_HASH
+    USERNAME USER_GROUPS
     ENABLE_SSHD ENABLE_DHCP GRUB_REMOVABLE AUTO_CONFIRM UPDATE_WORLD
     ALLOW_INSTALLED_HOST READ_NEWS
     SKIP_HW_PREFLIGHT HW_PREFLIGHT_STRICT
@@ -383,11 +387,32 @@ copy_scripts_to_target() {
     chmod +x "${scripts[@]}" "$dst/install.sh"
 }
 
+# Variaveis que carregam MATERIAL SENSIVEL. Continuam atravessando para o
+# chroot (a etapa 06 precisa delas), mas NAO entram no vars.sh persistente:
+# vao para um arquivo de runtime separado, com permissao restritiva, que e
+# removido ao final. Hash nao e plaintext, mas tambem nao e para ficar largado
+# em /root do sistema instalado.
+SECRET_VARS=(ROOT_PASSWORD_HASH USER_PASSWORD_HASH)
+
+# Caminho (relativo ao dir de scripts no alvo) do arquivo de segredos.
+SECRETS_FILE_REL="secrets.env"
+
+# secrets_path: caminho absoluto do arquivo de segredos no alvo.
+secrets_path() {
+    printf '%s\n' "$TARGET_ROOT$TARGET_SCRIPTS_DIR_REL/$SECRETS_FILE_REL"
+}
+
 # write_effective_vars: reescreve o vars.sh COPIADO com os valores efetivos
 # das variaveis desta execucao (defaults + edicoes + overrides de ambiente).
 # E este arquivo — e somente ele — que configura a fase chroot.
+#
+# Os SECRET_VARS ficam de FORA deste arquivo. O vars.sh gerado termina fazendo
+# source do secrets.env quando ele existe, e declarando defaults vazios quando
+# nao existe — assim `set -u` nunca quebra numa retomada em que os segredos ja
+# foram removidos (o 06 cai no `passwd` interativo, que e o default do projeto
+# quando nao ha hash).
 write_effective_vars() {
-    local dst="$TARGET_ROOT$TARGET_SCRIPTS_DIR_REL/vars.sh" tmp v
+    local dst="$TARGET_ROOT$TARGET_SCRIPTS_DIR_REL/vars.sh" tmp v sec any_secret=no
     tmp="$dst.tmp"
     {
         echo '#!/usr/bin/env bash'
@@ -396,12 +421,61 @@ write_effective_vars() {
         echo '# E o UNICO canal de configuracao entre as fases: o chroot e invocado'
         echo "# com env -i, nenhuma variavel de ambiente atravessa."
         echo "# Gerado em: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo '#'
+        echo '# Hashes de senha NAO ficam aqui — vivem no secrets.env ao lado,'
+        echo '# com modo 0600, e sao removidos ao final da instalacao.'
         for v in "${ALL_VARS[@]}"; do
             printf '%s=%q\n' "$v" "${!v}"
         done
+        echo ''
+        echo '# Segredos: presentes so durante a instalacao.'
+        echo '_gi_secrets="${BASH_SOURCE[0]%/*}/'"$SECRETS_FILE_REL"'"'
+        echo '# shellcheck disable=SC1090'
+        echo '[[ -r "$_gi_secrets" ]] && source "$_gi_secrets"'
+        echo 'unset _gi_secrets'
+        for v in "${SECRET_VARS[@]}"; do
+            printf ': "${%s:=}"\n' "$v"
+        done
     } > "$tmp"
     mv "$tmp" "$dst"
-    log_info "vars.sh efetivo gravado em $dst"
+    log_info "vars.sh efetivo gravado em $dst (sem material sensivel)"
+
+    # Segredos: arquivo proprio, criado com umask restritiva. Sempre removemos
+    # o anterior primeiro — um secrets.env de uma execucao passada, com hashes
+    # que ja nao valem, seria pior que a ausencia dele.
+    sec="$(secrets_path)"
+    rm -f "$sec"
+    for v in "${SECRET_VARS[@]}"; do
+        [[ -n "${!v}" ]] && any_secret=yes
+    done
+    if [[ "$any_secret" == "yes" ]]; then
+        ( umask 077
+          {
+              echo '# Gerado pelo install.sh — hashes de senha para a fase chroot.'
+              echo '# Removido automaticamente ao final da instalacao. Modo 0600.'
+              for v in "${SECRET_VARS[@]}"; do
+                  printf '%s=%q\n' "$v" "${!v}"
+              done
+          } > "$sec" )
+        chmod 600 "$sec"
+        # NUNCA loga o conteudo — so a existencia e o modo.
+        log_info "hashes de senha gravados em $(dirname "$sec")/$SECRETS_FILE_REL (modo 0600, removido ao final)"
+    fi
+}
+
+# cleanup_secrets: remove o arquivo de segredos do alvo.
+# Chamado no caminho de sucesso do fluxo completo. NAO e chamado em falha: o
+# resume da fase live regrava o arquivo a partir do vars.sh de origem, entao
+# mante-lo durante uma instalacao interrompida preserva o resume nao-interativo.
+# Mesmo assim, uma instalacao que nunca conclui deixa o alvo inacabado — e o
+# aviso abaixo existe para o operador saber que ha um arquivo a limpar.
+cleanup_secrets() {
+    local sec
+    sec="$(secrets_path)"
+    if [[ -e "$sec" ]]; then
+        rm -f "$sec"
+        log_info "arquivo de segredos removido ($sec)"
+    fi
 }
 
 # enter_chroot <cobre-fase-inteira: yes|no> [flags...]: prepara os mounts,
@@ -557,6 +631,12 @@ main_live() {
     local start="${FROM_STEP:-0}" n
     for ((n = start; n <= 2; n++)); do
         run_script "$(step_script "$n")"
+        # Identidade do state so pode ser conferida com o alvo montado — a
+        # etapa 00 e quem monta. Antes disso o state_dir aponta para o tmpfs do
+        # live, que o proprio 00 descarta.
+        if [[ "$n" -eq 0 ]]; then
+            state_identity_check
+        fi
     done
 
     # encaminha --from para a fase chroot apenas quando a live foi pulada
@@ -571,6 +651,8 @@ main_live() {
 
     # fase chroot concluida com sucesso — limpeza do Handbook "Removing tarballs"
     cleanup_stage3_workdir
+    # ... e o material sensivel, que so precisava existir durante a etapa 06
+    cleanup_secrets
 
     attach_log_to_target
     print_final_instructions
@@ -581,6 +663,10 @@ main_live() {
 # ---------------------------------------------------------------------------
 
 main_chroot() {
+    # Dentro do chroot o alvo e a propria raiz: o state existe e pode ser
+    # conferido antes de qualquer etapa.
+    state_identity_check
+
     local steps=() n
     if [[ -n "$ONLY_STEP" ]]; then
         steps=("$ONLY_STEP")

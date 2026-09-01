@@ -92,7 +92,20 @@
 # auto  = instala se `lspci -d 10de:` enxergar GPU NVIDIA, senao pula com aviso
 #         (na VM sem passthrough pula sozinho; no bare metal reativa sozinho)
 # force = instala mesmo sem GPU visivel (valida o build na VM)
-# skip  = nunca instala
+# skip  = NAO instala, NAO configura e NAO testa o driver NVIDIA.
+#
+# "skip" e uma OMISSAO, nunca uma remocao: o instalador nao desinstala
+# nvidia-drivers, nao apaga configuracao de portage e nao mexe em modulos ja
+# presentes. Num sistema que ja tem o driver, skip simplesmente nao encosta
+# nele. Se voce quer remover o driver, faca isso a mao — o instalador nunca
+# desfaz o que nao foi ele que fez.
+#
+# Nota: a etapa 03 exige que x11-drivers/nvidia-drivers EXISTA na arvore do
+# Portage mesmo com skip. Isso e proposital: a exigencia valida que a arvore
+# sincronizada esta completa (uma arvore truncada satisfaz timestamp.chk mas
+# nao tem as categorias que 04/05/06 usam), e o hardware alvo deste projeto tem
+# uma RTX 5060 Ti — a ausencia do ebuild indica arvore quebrada, nao uma
+# escolha de configuracao. skip nao afrouxa essa verificacao.
 : "${NVIDIA_MODE:=auto}"
 
 # ---------------------------------------------------------------------------
