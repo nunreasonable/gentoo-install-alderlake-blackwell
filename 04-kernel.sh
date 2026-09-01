@@ -149,6 +149,9 @@ probe_sources() {
     pkg_installed sys-kernel/gentoo-sources || return 1
     pkg_installed sys-kernel/linux-firmware || return 1
     pkg_installed sys-firmware/intel-microcode || return 1
+    pkg_installed sys-kernel/installkernel || return 1
+    # O que importa nao e so o pacote, e o binario que o `make install` invoca.
+    [[ -x /sbin/installkernel || -x /usr/sbin/installkernel ]] || return 1
     # /usr/src/linux precisa apontar para uma arvore valida (eselect kernel)
     kernel_release > /dev/null || return 1
     return 0
@@ -165,9 +168,40 @@ sys-kernel/linux-firmware linux-fw-redistributable
 sys-firmware/intel-microcode intel-ucode
 EOF
 
+    # sys-kernel/installkernel fornece /sbin/installkernel, que e QUEM o
+    # `make install` do kernel chama para gravar vmlinuz-<versao>,
+    # System.map-<versao> e config-<versao> em /boot.
+    #
+    # Sem esse pacote o `make install` NAO falha: o script de fallback do
+    # proprio kernel (arch/x86/boot/install.sh) copia o bzImage para
+    # /boot/vmlinuz — SEM VERSAO no nome — tenta rodar o LILO, imprime
+    # "Cannot find LILO." e sai com 0. O resultado e um /boot que parece
+    # populado mas nao tem o vmlinuz-<versao> que o 05 e os probes esperam.
+    # Visto num smoke-test em QEMU; a verificacao pos-install abaixo pegou.
+    #
+    # USE PINADOS: os backends alternativos deste pacote geram INITRAMFS
+    # (dracut, ugrd) ou Unified Kernel Image. Este projeto boota SEM initramfs
+    # — todo driver de raiz e built-in — e um initramfs gerado aqui seria
+    # referenciado pelo grub-mkconfig do 05, quebrando a premissa do design.
+    # Forcamos o backend tradicional. Flags desconhecidas na arvore sao
+    # ignoradas pelo portage; a garantia de verdade e a verificacao logo abaixo.
+    mkdir -p /etc/portage/package.use
+    cat > /etc/portage/package.use/installkernel <<'EOF'
+# Gerado por 04-kernel.sh — backend tradicional, sem gerador de initramfs.
+# Este projeto boota sem initramfs (drivers de raiz built-in): dracut/ugrd/uki
+# aqui produziriam um initramfs que o grub-mkconfig do 05 passaria a usar.
+sys-kernel/installkernel -dracut -ugrd -uki -ukify -systemd -efistub
+EOF
+
     # Handbook: emerge das fontes + firmware + microcode (nao pinamos versao;
     # o portage resolve o estavel corrente).
-    emerge sys-kernel/gentoo-sources sys-kernel/linux-firmware sys-firmware/intel-microcode
+    emerge sys-kernel/gentoo-sources sys-kernel/linux-firmware sys-firmware/intel-microcode \
+           sys-kernel/installkernel
+
+    # Verificar DEPOIS de instalar (invariante 6): o pacote pode estar merged e
+    # ainda assim nao ter deixado o binario que o make install procura.
+    [[ -x /sbin/installkernel || -x /usr/sbin/installkernel ]] \
+        || die "sys-kernel/installkernel foi emergido mas nao ha /sbin/installkernel nem /usr/sbin/installkernel — o 'make install' cairia no fallback legado e gravaria /boot/vmlinuz sem versao"
 
     # Handbook: apontar /usr/src/linux para as fontes via eselect.
     #
@@ -387,7 +421,26 @@ do_kernel_build() {
     kver="$(kernel_release)" \
         || die "build concluido mas /usr/src/linux nao aponta para uma arvore valida — nao da para derivar a release do kernel"
     [[ -f "/boot/vmlinuz-${kver}" ]] \
-        || die "make install concluido mas /boot/vmlinuz-${kver} nao existe — a release derivada nao casa com o que foi instalado em /boot"
+        || die "make install concluido mas /boot/vmlinuz-${kver} nao existe — a release derivada nao casa com o que foi instalado em /boot. Causa tipica: /sbin/installkernel ausente, e o fallback do kernel gravou /boot/vmlinuz SEM versao (procure por 'Cannot find LILO.' no log). Confira 'ls /boot' e que sys-kernel/installkernel esta instalado."
+
+    # Nenhum initramfs pode ter sido gerado: este sistema boota sem initramfs
+    # (drivers de raiz built-in, root=PARTUUID). Se um backend do installkernel
+    # produziu um, o grub-mkconfig do 05 passaria a referencia-lo e a premissa
+    # do design cairia em silencio. Falha aqui, alto e claro.
+    local stray_initrd
+    stray_initrd="$(find /boot -maxdepth 1 \( -name 'initramfs-*' -o -name 'initrd-*' -o -name 'initramfs.img*' \) -printf '%f ' 2>/dev/null || true)"
+    [[ -z "$stray_initrd" ]] \
+        || die "initramfs encontrado em /boot ($stray_initrd) — este projeto boota SEM initramfs. Um backend de sys-kernel/installkernel (dracut/ugrd/uki) foi ativado apesar do package.use; revise /etc/portage/package.use/installkernel e remova o(s) arquivo(s) antes de seguir."
+
+    # Restos do fallback legado (uma execucao anterior sem /sbin/installkernel
+    # grava /boot/vmlinuz e /boot/System.map SEM versao). Nao apagamos nada em
+    # /boot automaticamente — so avisamos, porque decidir o que remover do
+    # diretorio de boot e do operador.
+    local f
+    for f in /boot/vmlinuz /boot/System.map /boot/vmlinuz.old /boot/System.map.old; do
+        [[ -f "$f" ]] && log_warn "resto de execucao anterior sem installkernel: $f (sem versao no nome). Inofensivo para o GRUB, que lista vmlinuz-*, mas pode ser removido a mao."
+    done
+
     vm_hash="$(sha256sum "/boot/vmlinuz-${kver}" | awk '{print $1}')"
     printf '%s %s\n' "$frag_hash" "$vm_hash" > "/boot/kernel-fragment.sha256-${kver}"
 
