@@ -366,9 +366,14 @@ do_mkfs_root() {
     # _confirm_reformat acima; sem o force o mkfs pararia num prompt
     # interativo ao ver assinatura antiga.
     case "$ROOT_FS" in
-        ext4) mkfs.ext4 -F "$ROOT_PART" ;;
-        xfs)  mkfs.xfs  -f "$ROOT_PART" ;;
-        *)    die "ROOT_FS='$ROOT_FS' inesperado (validate_vars deveria ter barrado)" ;;
+        ext4)  mkfs.ext4  -F "$ROOT_PART" ;;
+        xfs)   mkfs.xfs   -f "$ROOT_PART" ;;
+        # -f para sobrescrever assinatura anterior, como nos outros dois.
+        # Layout SIMPLES de proposito: um unico volume, sem subvolumes. O
+        # instalador monta a raiz direto e o fstab do 03 nao carrega
+        # subvol=... — quem quiser @/@home cria depois, com o sistema no ar.
+        btrfs) mkfs.btrfs -f "$ROOT_PART" ;;
+        *)     die "ROOT_FS='$ROOT_FS' inesperado (validate_vars deveria ter barrado)" ;;
     esac
 }
 

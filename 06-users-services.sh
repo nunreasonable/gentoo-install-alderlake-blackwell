@@ -388,9 +388,10 @@ probe_fs_tools() {
     # Fail-closed no probe: indeterminado => reporta nao-feito (nao mata o
     # script; quem morre e o do_fn, que e onde a decisao importa).
     actual="$(root_fs_actual)" || return 1
-    if [[ "$actual" == "xfs" ]]; then
-        pkg_installed sys-fs/xfsprogs || return 1
-    fi
+    case "$actual" in
+        xfs)   pkg_installed sys-fs/xfsprogs   || return 1 ;;
+        btrfs) pkg_installed sys-fs/btrfs-progs || return 1 ;;
+    esac
     return 0
 }
 
@@ -399,9 +400,13 @@ do_fs_tools() {
     actual="$(root_fs_actual)" \
         || die "nao foi possivel determinar o filesystem real de $ROOT_PART (blkid sem TYPE) — a escolha das ferramentas de filesystem depende disso; verifique se a raiz esta formatada e visivel no chroot"
     warn_root_fs_mismatch "$actual"
-    if [[ "$actual" == "xfs" ]]; then
-        pkgs+=(sys-fs/xfsprogs)
-    fi
+    case "$actual" in
+        xfs)   pkgs+=(sys-fs/xfsprogs) ;;
+        # btrfs-progs traz btrfs(8), btrfs-scrub e o fsck.btrfs (que e um stub
+        # que sai 0 de proposito — o btrfs nao usa fsck em boot). Sem o pacote
+        # o servico fsck do OpenRC nao acha fsck.btrfs para a raiz com passno 1.
+        btrfs) pkgs+=(sys-fs/btrfs-progs) ;;
+    esac
     emerge --quiet "${pkgs[@]}"
 }
 

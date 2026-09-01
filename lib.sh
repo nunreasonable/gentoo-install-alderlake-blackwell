@@ -415,8 +415,8 @@ validate_vars() {
         || die "ROOT_SIZE='$ROOT_SIZE' invalido (vazio = resto do disco, ou <numero>MiB/GiB)"
 
     # --- enums ---
-    [[ "$ROOT_FS" == "ext4" || "$ROOT_FS" == "xfs" ]] \
-        || die "ROOT_FS='$ROOT_FS' invalido (ext4|xfs)"
+    [[ "$ROOT_FS" == "ext4" || "$ROOT_FS" == "xfs" || "$ROOT_FS" == "btrfs" ]] \
+        || die "ROOT_FS='$ROOT_FS' invalido (ext4|xfs|btrfs)"
     [[ "$INIT_SYSTEM" == "openrc" || "$INIT_SYSTEM" == "systemd" ]] \
         || die "INIT_SYSTEM='$INIT_SYSTEM' invalido (openrc|systemd)"
     [[ "$NVIDIA_MODE" == "auto" || "$NVIDIA_MODE" == "force" || "$NVIDIA_MODE" == "skip" ]] \

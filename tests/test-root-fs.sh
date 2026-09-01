@@ -79,4 +79,58 @@ else
     no "03-chroot-setup nao usa root_fs_actual — 03 e 06 podem discordar"
 fi
 
+# --- coerencia do conjunto de filesystems suportados ----------------------
+# ROOT_FS so vale se as QUATRO pontas concordarem: o enum aceita, o 00 sabe
+# formatar, o kernel embute o driver e o 06 instala as ferramentas. Uma ponta
+# faltando produz falha em momentos diferentes — e a do kernel produz a pior
+# delas: sistema que nao boota, sem shell de recuperacao.
+enum_line="$(grep -n 'ROOT_FS.*invalido' "$REPO_DIR/lib.sh" | head -n1)"
+mkfs_block="$(sed -n '/case "\$ROOT_FS" in/,/esac/p' "$REPO_DIR/00-partition.sh")"
+frag="$REPO_DIR/kernel-fragment.config"
+required="$(sed -n '/local -a required=(/,/^    )/p' "$REPO_DIR/04-kernel.sh")"
+fs_tools="$(extract_fn "$REPO_DIR/06-users-services.sh" do_fs_tools)"
+
+for fs in ext4 xfs btrfs; do
+    # 1. o enum aceita
+    if grep -q "\"$fs\"" <<< "$(grep -A1 'ROOT_FS.*==' "$REPO_DIR/lib.sh" | head -4)"; then
+        ok "ROOT_FS=$fs e aceito por validate_vars"
+    else
+        no "ROOT_FS=$fs nao esta no enum de validate_vars"
+    fi
+    # 2. o 00 sabe formatar
+    if grep -qE "^\s+$fs\)" <<< "$mkfs_block"; then
+        ok "00-partition sabe formatar $fs"
+    else
+        no "00-partition nao tem caso de mkfs para $fs" "validate_vars aceitaria e o mkfs morreria depois do ERASE"
+    fi
+done
+
+# 3. o kernel embute os TRES. Sem initramfs, =m no driver da raiz = nao boota.
+for sym in EXT4_FS XFS_FS BTRFS_FS; do
+    if grep -qx "CONFIG_$sym=y" "$frag"; then
+        ok "kernel-fragment tem CONFIG_$sym=y (built-in, exigido sem initramfs)"
+    elif grep -qx "CONFIG_$sym=m" "$frag"; then
+        no "CONFIG_$sym esta como MODULO no fragmento" \
+           "sem initramfs o driver da raiz precisa ser =y — o modulo vive dentro da raiz que ainda nao foi montada"
+    else
+        no "CONFIG_$sym ausente do kernel-fragment"
+    fi
+    # 4. e o gate duro cobra
+    if grep -qE "^\s+$sym\b" <<< "$required"; then
+        ok "verify_kconfig exige $sym"
+    else
+        no "verify_kconfig nao exige $sym" "um fragmento editado poderia rebaixa-lo sem ninguem ver"
+    fi
+done
+
+# 5. o 06 instala a ferramenta de cada fs que precisa de uma
+for pair in "xfs:xfsprogs" "btrfs:btrfs-progs"; do
+    fs="${pair%%:*}"; pkg="${pair##*:}"
+    if grep -q "$pkg" <<< "$fs_tools"; then
+        ok "06-fs-tools instala $pkg quando a raiz e $fs"
+    else
+        no "06-fs-tools nao instala $pkg para raiz $fs" "o fsck do primeiro boot nao acharia a ferramenta"
+    fi
+done
+
 finish

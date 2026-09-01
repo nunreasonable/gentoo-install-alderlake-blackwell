@@ -30,8 +30,19 @@
 # Tamanho da particao raiz. Vazio ("") = usa todo o resto do disco (recomendado).
 : "${ROOT_SIZE:=}"
 
-# Filesystem da raiz: ext4 ou xfs.
-# Nota: o Handbook atual recomenda xfs; ext4 continua perfeitamente suportado.
+# Filesystem da raiz: ext4 | xfs | btrfs
+#
+# O Handbook atual recomenda xfs; ext4 continua perfeitamente suportado e e o
+# unico que ja bootou em QEMU (duas vezes) — por isso segue como default.
+#
+# btrfs: layout SIMPLES, um volume unico, SEM subvolumes. O instalador monta a
+# raiz direto e o fstab nao carrega subvol=... Se voce quer o esquema @/@home
+# do Fedora, crie os subvolumes depois, com o sistema no ar.
+# O kernel embute os tres (BTRFS_FS=y) porque, sem initramfs, driver de
+# filesystem raiz como modulo e um sistema que nao boota.
+#
+# ATENCAO: btrfs NUNCA foi exercitado por este instalador — nem em QEMU. ext4 e
+# o caminho com evidencia.
 : "${ROOT_FS:=ext4}"
 
 # Ponto de montagem do sistema alvo durante a fase live (padrao do Handbook).

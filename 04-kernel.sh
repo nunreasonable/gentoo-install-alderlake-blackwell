@@ -289,8 +289,9 @@ verify_kconfig() {
     # EFI/GPT/ESP, console pre-driver, cpufreq hybrid-aware do Alder Lake.
     local -a required=(
         BLK_DEV_NVME        # root NVMe sem initramfs exige built-in
-        EXT4_FS             # qualquer um dos dois pode ser root ($ROOT_FS)
-        XFS_FS
+        EXT4_FS             # qualquer um dos TRES pode ser root ($ROOT_FS), e
+        XFS_FS              # sem initramfs o driver da raiz TEM de ser =y:
+        BTRFS_FS            # modulo dentro da raiz nao montada nao existe
         EFI_STUB
         EFI_PARTITION       # tabela GPT
         VFAT_FS             # ESP
