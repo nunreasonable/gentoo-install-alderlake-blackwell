@@ -484,6 +484,20 @@ print_final_instructions() {
     log_info "=================================================================="
     log_info "Instalacao concluida!"
     log_info "=================================================================="
+    log_info ""
+    # As duas senhas sao pedidas em prompts separados, com longos emerges entre
+    # eles — no fim da instalacao o operador ja nao lembra qual era qual. Sem
+    # este resumo, a primeira coisa que acontece apos o reboot e errar o login
+    # (visto no primeiro smoke-test que chegou ao boot).
+    log_info "CONTAS CRIADAS neste sistema:"
+    log_info "    root       (senha definida no prompt '06-root-password')"
+    log_info "    $USERNAME  (senha definida no prompt '06-user-password'; grupos: $USER_GROUPS)"
+    log_info ""
+    log_info "ATENCAO ao teclado: o console instalado usa KEYMAP=$KEYMAP. Se voce"
+    log_info "digitou as senhas num live ISO com layout diferente, simbolos podem"
+    log_info "sair em outra posicao. Se o login falhar, no menu do GRUB tecle 'e',"
+    log_info "acrescente 'rw init=/bin/bash' na linha 'linux', Ctrl+X, e rode 'passwd'."
+    log_info ""
     log_info "Para finalizar, execute MANUALMENTE (este script NUNCA reboota sozinho):"
     log_info ""
     log_info "    cd /"

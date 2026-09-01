@@ -33,10 +33,10 @@ Esta secao e a informacao mais importante do repositorio. Ela e literal.
 | Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
 | Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 17 asercoes |
 
-### Execucao em QEMU/OVMF — parcial (2026-09-01)
+### Execucao em QEMU/OVMF — **completa, com boot** (2026-09-01)
 
-Primeira execucao real. VM: OVMF/UEFI, 6 vCPUs, disco **virtio** (`/dev/vda`),
-`NVIDIA_MODE=force`. Etapas alcancadas, em ordem:
+Instalacao inteira executada e o sistema instalado **bootou**. VM: OVMF/UEFI,
+6 vCPUs, disco **virtio** (`/dev/vda`), `NVIDIA_MODE=force`, OpenRC.
 
 | Etapa | Estado | O que ficou provado |
 |---|---|---|
@@ -45,12 +45,18 @@ Primeira execucao real. VM: OVMF/UEFI, 6 vCPUs, disco **virtio** (`/dev/vda`),
 | `01-stage3` | **Passou** | Import da chave releng + conferencia de fingerprint, pointer assinado, download, `gpg --verify` do `.asc`, `sha256sum --check`, extracao. `stage3.identity` gravado com o sha256 real |
 | `02-portage-config` | **Passou** | `make.conf` e `package.license` escritos de fora do chroot |
 | `03-chroot-setup` | **Passou** | `emerge-webrsync` + sync, perfil `23.0`, locale, `fstab` por UUID (ESP em `/efi` `umask=0077` passno 2, raiz passno 1, swap). News reportadas e **nao** marcadas como lidas (`count new` = 1) |
-| `04-kernel` | **Parcial** | Fontes/firmware/microcode emergidos, `eselect kernel` por versao, `merge_config` + `olddefconfig`, **`verify_kconfig` aprovou**, kernel compilado por inteiro, `modules_install` e `depmod` concluidos. **Falhou no `make install`** |
-| `05-bootloader` | **Nao alcancada** | — |
-| `06-users-services` | **Nao alcancada** | — |
-| Boot do sistema instalado | **Nao alcancado** | — |
+| `04-kernel` | **Passou** | `eselect kernel` por versao, `merge_config` + `olddefconfig`, **`verify_kconfig` aprovou**, kernel 6.18.48 compilado, `modules_install`, `depmod`, e `make install` gravando `vmlinuz-6.18.48-gentoo` |
+| `05-bootloader` | **Passou** | `grub-install` UEFI, entrada de NVRAM criada no OVMF (`Boot0002* gentoo`), `grub-mkconfig` validado com `grub-script-check` |
+| `06-users-services` | **Passou** | Hostname, `/etc/hosts`, keymap, **`passwd` interativo atraves do chroot**, usuario + grupos, `dosfstools`, servicos no runlevel |
+| **Boot do sistema instalado** | **Passou** | GRUB → kernel **sem initramfs** → raiz montada por `root=PARTUUID` → console → OpenRC runlevel 3 → `sshd`/`dhcpcd`/`cronie`/`syslogd` de pe |
 
-**Tres bugs reais encontrados por esta execucao**, todos corrigidos:
+Verificacoes feitas antes do reboot: o `root=PARTUUID` do `grub.cfg` **bate
+exatamente** com o `blkid` da particao raiz; `/boot` tem o kernel versionado; a
+NVRAM registrou a entrada. No boot, `fsck.fat` rodou na ESP com sucesso — o que
+so e possivel porque a etapa `06` instala `sys-fs/dosfstools` (a ESP tem
+`passno 2` no fstab; sem `fsck.vfat` o `localmount` do OpenRC nao subiria).
+
+**Cinco bugs reais encontrados por esta execucao**, todos corrigidos:
 
 1. **Guarda de disco funcionando** — a VM usa `/dev/vda` e o `TARGET_DISK`
    default e `/dev/nvme0n1`. O instalador **abortou** em vez de adivinhar
@@ -64,34 +70,49 @@ Primeira execucao real. VM: OVMF/UEFI, 6 vCPUs, disco **virtio** (`/dev/vda`),
    `sys-kernel/installkernel`; o fallback do kernel copia sem sufixo de versao,
    tenta o LILO e **sai com 0**. Pego pela verificacao pos-instalacao; sem ela
    o `05` teria gerado um `grub.cfg` apontando para um kernel inexistente.
+4. **`probe_default_grub` reprovava o arquivo que o `do_fn` acabara de
+   escrever** — o probe exige "nenhum `root=` ativo" mas varria o arquivo
+   inteiro, e o comentario que explica por que nao ha `root=` contem a string
+   quatro vezes. Sintoma: *"do_fn terminou mas o probe ainda reporta
+   nao-feito"*.
+5. **Resume caro** — `emerge <pacote>` re-mergeia o que ja esta instalado. Um
+   resume que reprovava por faltar **um** pacote pequeno remergia o
+   `linux-firmware` inteiro (~2GB). Corrigido com `--noreplace`.
+
+Nenhum dos cinco e detectavel por analise estatica. Os quatro primeiros exigem
+executar a etapa; o quinto exige observar o **custo** de um resume real. A
+auditoria adversarial de 13 dimensoes, o `bash -n` e o ShellCheck passaram por
+cima de todos.
 
 ### O que continua **NAO** validado
 
 | Verificacao | Estado |
 |---|---|
-| Instalacao completa ponta a ponta | **NUNCA** |
-| Boot do sistema instalado | **NUNCA** |
-| `05-bootloader` e `06-users-services` | **NUNCA** executadas |
-| Boot em bare metal | **NUNCA** |
-| Re-execucao / resume apos interrupcao real | **NUNCA** |
-| Runtime NVIDIA (modulo, GSP, modeset) | **Impossivel em QEMU** |
+| Boot em **bare metal** | **NUNCA** |
+| Runtime NVIDIA (modulo, GSP, modeset, Blackwell) | **Impossivel em QEMU** |
+| NVRAM do firmware **ASUS 1836** (o OVMF nao e ele) | **NUNCA** |
+| Alder Lake real: ITMT, Thread Director, `intel_pstate`/`intel_idle` | **NUNCA** |
+| NVMe fisico, rede e audio da B760M-E | **NUNCA** |
+| Suspend/resume | **NUNCA** |
+| Re-execucao / resume apos interrupcao real | **Parcial** — houve resume apos as falhas acima, mas nao apos interrupcao no meio de uma sub-etapa |
+| Reproducibilidade (segunda instalacao limpa do zero) | **NUNCA** |
+| Branch `INIT_SYSTEM=systemd` | **NUNCA** executado |
 
 ### Traduzindo
 
-Metade da instalacao ja rodou de verdade uma vez, num ambiente virtualizado.
-A outra metade — bootloader, usuarios, servicos e **o boot em si** — nunca
-executou.
+A instalacao roda de ponta a ponta e o sistema resultante **boota**, numa VM,
+com OpenRC. Isso foi provado uma vez, em 2026-09-01.
 
-Ler codigo com atencao encontra bugs de logica; rodar em QEMU encontra outros
-(tres, ate agora). Nenhum dos dois prova que um kernel **boota**, que um driver
-carrega, que um firmware retem uma entrada de NVRAM ou que a maquina de
-referencia se comporta como a VM. Essas propriedades continuam **NAO
-VALIDADAS**.
+Isso **nao** e reprodutibilidade (uma execucao), **nao** e o hardware alvo
+(QEMU nao e uma B760M-E com uma RTX 5060 Ti), e **nao** cobre o branch systemd.
+A parte do projeto que mais pode dar errado — o driver NVIDIA proprietario
+carregando numa GPU Blackwell fisica, com o firmware GSP e o handoff de KMS — e
+justamente a que uma VM sem passthrough PCI nunca vai tocar.
 
-Antes de rodar isto num disco com dados, leia
-**[docs/ARMADILHAS.md](docs/ARMADILHAS.md)** — manual de operacao com o comando
-exato de verificacao para cada armadilha conhecida, a saida esperada e o que
-fazer quando der errado.
+Antes de rodar isto num disco com dados, leia a secao **[SO BARE METAL]**
+abaixo e **[docs/ARMADILHAS.md](docs/ARMADILHAS.md)** — manual de operacao com
+o comando exato de verificacao para cada armadilha conhecida, a saida esperada
+e o que fazer quando der errado.
 
 ### Legenda usada no restante deste README
 
@@ -103,9 +124,10 @@ fazer quando der errado.
 | **[SO BARE METAL]** | Impossivel validar em QEMU; exige o hardware fisico |
 | **[NAO VALIDADO]** | Sem execucao de nenhum tipo |
 
-**[QEMU-OK]** significa "esta etapa rodou ate o fim numa VM, uma vez". Nao
-significa que e reproduzivel, nem que funciona no bare metal, nem que o
-sistema resultante boota.
+**[QEMU-OK]** significa "isto rodou ate o fim numa VM, **uma vez**". Nao
+significa que e reproduzivel, nem que funciona no hardware de referencia. Uma
+VM QEMU e um conjunto de dispositivos virtio com um firmware OVMF — nao e uma
+B760M-E com uma RTX 5060 Ti.
 
 Nao ha nada marcado **VALIDADO FISICAMENTE** neste documento, porque nao ha
 nada nesse estado.
@@ -139,7 +161,7 @@ validacao:
   no repositorio**.
 - **Rede e audio da B760M-E**, e HDMI audio da GPU.
 
-### Boot sem initramfs **[NAO VALIDADO]**
+### Boot sem initramfs **[QEMU-OK]** **[SO BARE METAL: nao validado]**
 
 Decisao de design deliberada, e o invariante mais fragil do projeto.
 
@@ -374,7 +396,7 @@ runtime. Nenhum teste particiona, monta, baixa ou compila coisa alguma.
 
 ---
 
-## Receita QEMU/libvirt **[QEMU-OK ate a etapa 04]**
+## Receita QEMU/libvirt **[QEMU-OK — instalacao completa + boot]**
 
 > Esta receita **nunca foi rodada**. Ela e o plano de validacao, nao um relato
 > de validacao. Mesmo se passar por inteiro, ela nao valida nada da lista
