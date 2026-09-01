@@ -590,8 +590,10 @@ EOF
 # -tools: nvidia-settings puxa a arvore do GTK, que um sistema base nao tem.
 # kernel-open: obrigatorio no ramo 580.x para Blackwell (GSP-only).
 x11-drivers/nvidia-drivers -tools kernel-open
+# libglvnd[X]: exigido por nvidia-drivers[X]. Ver comentario no ramo >=595.
+media-libs/libglvnd X
 EOF
-        log_info "ramo 580.x: package.use/nvidia-drivers gravado (-tools kernel-open)"
+        log_info "ramo 580.x: package.use/nvidia-drivers gravado (-tools kernel-open, libglvnd X)"
     else
         cat > /etc/portage/package.use/nvidia-drivers <<'EOF'
 # Gerado por 04-kernel.sh
@@ -599,8 +601,16 @@ EOF
 # sistema base nao tem — o emerge pararia pedindo --autounmask-write.
 # Sem kernel-open: em >=595 o flag nao existe (modulos abertos sao sempre usados).
 x11-drivers/nvidia-drivers -tools
+# libglvnd[X]: dependencia direta de nvidia-drivers[X], e 'X' vem ligada por
+# default no driver. O perfil base nao liga X globalmente, entao o portage
+# pediria --autounmask-write so por causa disto.
+# Mantemos X no driver (em vez de desligar) porque a maquina alvo deste projeto
+# tem uma RTX 5060 Ti e vai rodar ambiente grafico: instalar o driver sem X
+# significaria recompila-lo depois. Se voce quer um sistema headless, troque as
+# duas linhas por 'x11-drivers/nvidia-drivers -tools -X' e remova esta.
+media-libs/libglvnd X
 EOF
-        log_info "package.use/nvidia-drivers gravado (-tools; sem kernel-open neste ramo)"
+        log_info "package.use/nvidia-drivers gravado (-tools, libglvnd X; sem kernel-open neste ramo)"
         # Nosso arquivo nao declara kernel-open neste ramo, mas isso nao basta:
         # em >=595 o flag nao existe mais e o emerge morre com "unknown USE
         # flag". Se o usuario deixou o flag em OUTRO arquivo do package.use/ ou

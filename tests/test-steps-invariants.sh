@@ -139,6 +139,23 @@ else
     no "-tools nao esta fixado em todos os ramos do do_nvidia" \
        "encontrei $heredocs ocorrencia(s); ramo sem -tools trava o emerge no autounmask"
 fi
+# libglvnd[X] acompanha nvidia-drivers[X] nos dois ramos: sem isso o emerge
+# para pedindo --autounmask-write so por causa dessa dependencia.
+glv="$(grep -c '^media-libs/libglvnd X' <<< "$dn" || true)"
+if (( glv >= 2 )); then
+    ok "package.use declara libglvnd X nos dois ramos (dependencia de nvidia-drivers[X])"
+else
+    no "libglvnd X ausente em algum ramo" \
+       "encontrei $glv; com X ligado no driver, o emerge trava no autounmask"
+fi
+# Coerencia: se o driver mantem X, libglvnd precisa de X. Se alguem desligar X
+# no driver, a linha do libglvnd vira supérflua — mas nunca o contrario.
+if grep -qE '^x11-drivers/nvidia-drivers .*-X( |$)' <<< "$dn" && (( glv > 0 )); then
+    no "driver com -X mas libglvnd X ainda declarado (incoerente)"
+else
+    ok "coerencia entre X do driver e X do libglvnd"
+fi
+
 # kernel-open so pode aparecer como flag ATIVO no ramo 580.x.
 if grep -qE '^x11-drivers/nvidia-drivers .*[^-]kernel-open' <<< "$dn"; then
     ok "kernel-open aparece como flag ativo (ramo 580.x)"
