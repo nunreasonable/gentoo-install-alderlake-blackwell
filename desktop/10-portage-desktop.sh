@@ -100,6 +100,24 @@ desktop_atoms_tree() {
         *) die "DESKTOP_TERMINAL='$DESKTOP_TERMINAL' invalido — use foot, alacritty ou kitty. O terminal e a ferramenta de RECUPERACAO da sessao; entrar no niri sem terminal deixa voce numa tela vazia sem forma de abrir nada." ;;
     esac
 
+    # Terminal de recuperacao, ALEM do principal. kitty e alacritty dependem de
+    # EGL/GL — o caminho da NVIDIA que este projeto nunca validou. O foot
+    # renderiza em CPU e sobe mesmo com o EGL quebrado.
+    #
+    # Com DESKTOP_TERMINAL=foot o atom sai repetido na lista. E inofensivo: o
+    # probe so faz have_atom em cada item, e emerge com atom repetido e no-op.
+    case "$DESKTOP_RECOVERY_TERMINAL" in
+        foot)  printf '%s\n' gui-apps/foot ;;
+        none)  : ;;
+        *) die "DESKTOP_RECOVERY_TERMINAL='$DESKTOP_RECOVERY_TERMINAL' invalido — use foot ou none. Este e o terminal que tem de abrir quando o principal NAO abre; um terminal acelerado por GPU nao serve para esse papel." ;;
+    esac
+
+    # Shell. gentoo-zsh-completions traz completion de emerge/eselect/rc-service.
+    if [[ "$DESKTOP_SHELL" == "zsh" ]]; then
+        printf '%s\n' app-shells/zsh
+        printf '%s\n' app-shells/gentoo-zsh-completions
+    fi
+
     [[ "$DESKTOP_BAR"    == "waybar" ]] && printf '%s\n' gui-apps/waybar
     [[ "$DESKTOP_NOTIFY" == "mako"   ]] && printf '%s\n' gui-apps/mako
 

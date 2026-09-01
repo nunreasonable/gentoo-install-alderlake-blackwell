@@ -117,14 +117,28 @@ export TARGET_ROOT=""
 # depender do subsistema que estamos testando. Se o niri subir e o foot
 # funcionar, voce tem um terminal para diagnosticar o resto.
 #
-# NOTA sobre a rice de referencia: ela usa KITTY. Mas roda num Apple M2 com
-# Asahi, onde o caminho GPU e conhecido e estavel — nao numa Blackwell com
-# driver proprietario que este projeto nunca viu funcionar.
-# Recomendacao: instale com foot, CONFIRME que a sessao sobe, e so entao troque:
-#     DESKTOP_TERMINAL=kitty ./desktop/install-desktop.sh --only 14
-# Se o kitty abrir preto ou nao abrir, o problema e EGL/GBM da NVIDIA — e voce
-# ainda tem o foot para investigar.
-: "${DESKTOP_TERMINAL:=foot}"
+# A rice de referencia usa KITTY, entao kitty e o default aqui.
+#
+# Mas a referencia roda num Apple M2 com Asahi, onde o caminho GPU e conhecido
+# e estavel — nao numa Blackwell com driver proprietario que este projeto nunca
+# viu funcionar. Por isso o modulo instala TAMBEM o terminal de recuperacao
+# abaixo, e o amarra a um atalho proprio. Um terminal a mais custa segundos de
+# compilacao; ficar sem terminal numa sessao grafica que subiu pela metade
+# custa um reboot as cegas.
+: "${DESKTOP_TERMINAL:=kitty}"
+
+# Terminal de RECUPERACAO, sempre instalado alem do principal: foot | none
+#
+# foot renderiza em CPU via pixman e NAO abre contexto EGL/GL. Ele nao depende
+# do caminho EGL/GBM da NVIDIA — que e exatamente o subsistema nunca validado
+# neste projeto (o driver foi compilado no QEMU, que nao tem GPU).
+# kitty e alacritty sao GPU-accelerated e sao os PRIMEIROS a falhar se o EGL
+# estiver errado: abrem preto, ou nao abrem.
+#
+# Se o kitty nao abrir, use o atalho do terminal de recuperacao (ver
+# DESKTOP_BIND_RECOVERY_TERM) e diagnostique de dentro da sessao, em vez de
+# reiniciar no escuro.
+: "${DESKTOP_RECOVERY_TERMINAL:=foot}"
 
 # ---------------------------------------------------------------------------
 # Aparencia (a "rice")
@@ -138,14 +152,34 @@ export TARGET_ROOT=""
 # verificado; entao nao e oferecido aqui.)
 : "${DESKTOP_WALLPAPER_TOOL:=swaybg}"
 
-# Caminho da imagem de papel de parede. VAZIO = nenhum wallpaper e configurado
-# e a etapa 14 apenas avisa onde coloca-lo.
+# Caminho da imagem de papel de parede. VAZIO = usa apenas a cor solida.
 #
-# A rice de referencia usa uma arte "Gentoo-chan" em tons de roxo, que casa com
-# a paleta Catppuccin Mocha (mauve). Esse arquivo NAO acompanha este repositorio
-# — e arte de terceiros, sem licenca declarada para redistribuicao. Baixe a sua
-# e aponte aqui. Sugestao de local: ~/.local/share/wallpapers/
+# A imagem NAO acompanha este repositorio, e nao vai acompanhar: e obra de um
+# artista publicada no Pixiv, sem licenca de redistribuicao. Baixar para uso
+# proprio e uma coisa; embutir num repositorio publico e outra.
+#
+# A rice de referencia usa esta:
+#   Pagina do artista: https://www.pixiv.net/en/artworks/115453639  (imagem p4)
+#
+# O DESKTOP_WALLPAPER_URL abaixo automatiza o download para o SEU disco.
+#
+# VAZIO (default) = a etapa 14 usa $HOME/.local/share/wallpapers/gentoo-chan.png,
+# com o $HOME DERIVADO do getent em runtime. Nao montamos o caminho aqui porque
+# DESKTOP_USER_HOME so e resolvido depois — interpolar agora daria "/.local/...".
 : "${DESKTOP_WALLPAPER:=}"
+
+# Nome do arquivo dentro de ~/.local/share/wallpapers/ quando DESKTOP_WALLPAPER
+# esta vazio e ha URL para baixar.
+: "${DESKTOP_WALLPAPER_NAME:=gentoo-chan.png}"
+
+# URL para baixar o wallpaper, se ele ainda nao existir no caminho acima.
+# VAZIO = nao baixa nada (voce coloca o arquivo a mao).
+#
+# ARMADILHA do Pixiv: o i.pximg.net RECUSA hotlink. Um wget/curl direto devolve
+# 403 Forbidden. E preciso mandar o cabecalho `Referer: https://www.pixiv.net/`,
+# o que a etapa 14 faz. Nao adianta colar a URL no navegador e esperar que um
+# download simples funcione.
+: "${DESKTOP_WALLPAPER_URL:=https://i.pximg.net/img-original/img/2024/01/31/22/22/27/115453639_p4.png}"
 
 # Modo de escala do swaybg: fill | fit | stretch | center | tile
 # "fill" preserva proporcao e cobre a tela (recorta o excedente).
@@ -165,6 +199,26 @@ export TARGET_ROOT=""
 
 # neovim: a referencia usa. Desligue se voce ja tem o seu editor. (yes|no)
 : "${DESKTOP_INSTALL_NEOVIM:=no}"
+
+# ---------------------------------------------------------------------------
+# Shell
+# ---------------------------------------------------------------------------
+
+# Shell do usuario: zsh | keep
+#
+# A rice de referencia usa zsh. "keep" nao mexe no shell atual.
+#
+# Se voce escolher zsh, o modulo instala app-shells/zsh e
+# app-shells/gentoo-zsh-completions (completion de emerge/eselect/rc-service,
+# que e metade do valor de zsh num Gentoo) e troca o shell do usuario.
+#
+# O login do ROOT nunca e alterado. Trocar o shell do root e como se perde o
+# acesso a um sistema quando o shell novo nao sobe por qualquer motivo.
+: "${DESKTOP_SHELL:=zsh}"
+
+# Rodar fastfetch ao abrir um shell interativo? (yes|no)
+# E o que produz a tela da rice de referencia ao abrir o terminal.
+: "${DESKTOP_FASTFETCH_ON_LOGIN:=yes}"
 
 # Lancador de aplicativos: fuzzel
 #

@@ -190,9 +190,15 @@ printf '# comentario do usuario mencionando kernel-open\nx11-drivers/nvidia-driv
     > "$scan_tmp/package.use/do-usuario"
 
 found=()
+# Captura os hits em vez de usar 'grep -q' no fim do pipe (mesmo padrao do
+# test-desktop.sh). Com 'grep -q' o consumidor sai no primeiro casamento e mata
+# o 'grep -v' a montante com SIGPIPE (141); sob 'pipefail' o status do pipeline
+# inteiro vira 141 mesmo tendo casado, e o 'if' cairia no ramo falso — um falso
+# negativo silencioso que depende so de quanto coube no buffer do pipe.
 while IFS= read -r f; do
-    if grep -vE '^[[:space:]]*#' "$f" 2>/dev/null \
-       | grep -qE '(^|[[:space:]])-?kernel-open([[:space:]]|$)'; then
+    hits="$(grep -vE '^[[:space:]]*#' "$f" 2>/dev/null \
+        | grep -E '(^|[[:space:]])-?kernel-open([[:space:]]|$)' || true)"
+    if [[ -n "$hits" ]]; then
         found+=("$(basename "$f")")
     fi
 done < <(find "$scan_tmp/package.use" -type f | sort)

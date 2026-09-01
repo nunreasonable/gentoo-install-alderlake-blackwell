@@ -430,17 +430,24 @@ KDL
     # solida: melhor um fundo na cor da paleta do que preto puro. As aspas
     # simples no heredoc sao importantes — o $ do swaybg nao pode expandir aqui.
     if [[ "$DESKTOP_WALLPAPER_TOOL" == "swaybg" ]]; then
-        if [[ -n "$DESKTOP_WALLPAPER" ]]; then
+        # A imagem so entra no config se ELA EXISTE agora. O swaybg SAI COM ERRO
+        # quando o -i aponta para arquivo ausente — e um spawn-at-startup que
+        # morre deixa o fundo preto, que e exatamente o que estamos evitando.
+        # A etapa 14-wallpaper roda ANTES desta, entao o download ja aconteceu
+        # (ou ja falhou com aviso) quando chegamos aqui.
+        local wp
+        wp="$(wallpaper_path)"
+        if [[ -s "$wp" ]]; then
             cat <<KDL
 
 // Papel de parede (o niri nao desenha fundo sozinho).
-spawn-at-startup "swaybg" "-i" "$DESKTOP_WALLPAPER" "-m" "$DESKTOP_WALLPAPER_MODE"
+spawn-at-startup "swaybg" "-i" "$wp" "-m" "$DESKTOP_WALLPAPER_MODE"
 KDL
         else
             cat <<KDL
 
-// Sem imagem definida (DESKTOP_WALLPAPER vazio): cor solida da paleta, para a
-// area vaga nao ficar preta. Defina DESKTOP_WALLPAPER e rode a etapa 14 de novo.
+// Nenhuma imagem em '$wp': cor solida da paleta, para a area vaga nao ficar
+// preta. Coloque a imagem la e rode: ./desktop/install-desktop.sh --only 14
 spawn-at-startup "swaybg" "-c" "#$DESKTOP_WALLPAPER_COLOR"
 KDL
         fi
@@ -1374,7 +1381,149 @@ log_info "paleta: $DESKTOP_PALETTE | terminal: $DESKTOP_TERMINAL | barra: $DESKT
 # $HOME real vindo do getent, a rota de audio herdada da 13 e o conteudo dos
 # dotfiles em variaveis. Nenhum byte foi para o disco ainda — a primeira escrita
 # e o user_write_if_absent do do_niri_config logo abaixo.
-dry_run_guard 14-niri-config 14-fontconfig 14-gtk-theme 14-bar-config 14-terminal-config
+# ---------------------------------------------------------------------------
+# 14-shell — zsh como shell do usuario, com fastfetch no login
+# ---------------------------------------------------------------------------
+#
+# O shell do ROOT nunca e tocado. Trocar o shell do root e como se perde acesso
+# a um sistema quando o shell novo nao sobe.
+
+probe_shell() {
+    [[ "$DESKTOP_SHELL" == "zsh" ]] || return 0
+    local sh
+    sh="$(getent passwd "$DESKTOP_USER" | cut -d: -f7)"
+    [[ "$sh" == */zsh ]] || return 1
+    [[ -f "$(user_home)/.zshrc" ]] || return 1
+    return 0
+}
+
+do_shell() {
+    [[ "$DESKTOP_SHELL" == "zsh" ]] || { log_info "DESKTOP_SHELL=$DESKTOP_SHELL — shell do usuario nao sera alterado"; return 0; }
+
+    local zsh_bin
+    zsh_bin="$(command -v zsh)" \
+        || die "zsh nao esta no PATH. A etapa 10 deveria te-lo instalado (app-shells/zsh) — rode ./desktop/install-desktop.sh --only 10 antes desta."
+
+    # /etc/shells precisa listar o shell, senao chsh recusa e alguns servicos
+    # (incluindo login via PAM) tratam a conta como sem shell valido.
+    if ! grep -qxF "$zsh_bin" /etc/shells 2>/dev/null; then
+        printf '%s\n' "$zsh_bin" >> /etc/shells
+        log_info "'$zsh_bin' adicionado a /etc/shells"
+    fi
+
+    local atual
+    atual="$(getent passwd "$DESKTOP_USER" | cut -d: -f7)"
+    if [[ "$atual" != "$zsh_bin" ]]; then
+        chsh -s "$zsh_bin" "$DESKTOP_USER" \
+            || die "chsh falhou ao trocar o shell de '$DESKTOP_USER' para '$zsh_bin'."
+        log_info "shell de '$DESKTOP_USER' alterado de '${atual:-nenhum}' para '$zsh_bin'"
+    fi
+
+    # .zshrc: config MINIMA e sem framework. A rice de referencia nao declara
+    # oh-my-zsh/prezto e nao vamos inventar dependencia que o autor nao citou.
+    # write_config_if_absent: se o usuario ja tem .zshrc, ele e dele.
+    local ff=""
+    [[ "$DESKTOP_FASTFETCH_ON_LOGIN" == "yes" && "$DESKTOP_INSTALL_FASTFETCH" == "yes" ]] && ff="
+# Fetch ao abrir shell interativo (e a tela da rice de referencia).
+# O teste de TTY evita rodar em shell nao-interativo (scp, rsync, cron), onde
+# saida inesperada QUEBRA o protocolo do outro lado.
+if [[ -o interactive ]] && command -v fastfetch > /dev/null; then
+    fastfetch
+fi"
+
+    user_write_if_absent "$(user_home)/.zshrc" "# Config minima de zsh — sem framework, de proposito.
+
+# Historico: compartilhado entre sessoes, sem duplicatas.
+HISTFILE=\"\$HOME/.zsh_history\"
+HISTSIZE=50000
+SAVEHIST=50000
+setopt SHARE_HISTORY HIST_IGNORE_ALL_DUPS HIST_IGNORE_SPACE
+
+# Completion. compinit e caro: o cache em .zcompdump e o que mantem o shell
+# abrindo rapido. gentoo-zsh-completions traz emerge/eselect/rc-service.
+autoload -Uz compinit && compinit -d \"\$HOME/.zcompdump\"
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
+
+# Navegacao
+setopt AUTO_CD
+
+# Prompt: usuario@host + diretorio + '%' — sem dependencia externa.
+PROMPT='%F{magenta}%n%f@%F{blue}%m%f %F{cyan}%~%f %# '
+
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+$ff"
+}
+
+# ---------------------------------------------------------------------------
+# 14-wallpaper — baixa a imagem, se preciso, e aponta o config
+# ---------------------------------------------------------------------------
+#
+# ARMADILHA do Pixiv: i.pximg.net RECUSA hotlink e devolve 403 sem o cabecalho
+# Referer apontando para pixiv.net. Um wget/curl direto NAO funciona.
+#
+# DIREITO AUTORAL: a imagem e do artista. Baixar para uso proprio e uma coisa;
+# este repositorio nunca vai conte-la. Por isso o download acontece na SUA
+# maquina, sob seu criterio, e nao ha imagem versionada aqui.
+
+wallpaper_path() {
+    if [[ -n "$DESKTOP_WALLPAPER" ]]; then
+        printf '%s\n' "$DESKTOP_WALLPAPER"
+    else
+        printf '%s/.local/share/wallpapers/%s\n' "$(user_home)" "$DESKTOP_WALLPAPER_NAME"
+    fi
+}
+
+probe_wallpaper() {
+    [[ "$DESKTOP_WALLPAPER_TOOL" == "swaybg" ]] || return 0
+    # Sem URL o modulo nao tem o que garantir: a cor solida do config basta.
+    [[ -n "$DESKTOP_WALLPAPER_URL" ]] || return 0
+    [[ -s "$(wallpaper_path)" ]]
+}
+
+do_wallpaper() {
+    [[ "$DESKTOP_WALLPAPER_TOOL" == "swaybg" ]] || return 0
+    [[ -n "$DESKTOP_WALLPAPER_URL" ]] || {
+        log_info "DESKTOP_WALLPAPER_URL vazio — nenhum download; o swaybg usara a cor solida"
+        return 0
+    }
+
+    local dest
+    dest="$(wallpaper_path)"
+    log_info "baixando o papel de parede de $DESKTOP_WALLPAPER_URL"
+    log_warn "a imagem e obra de terceiro (Pixiv). Baixando para uso proprio; ela NAO acompanha este repositorio."
+
+    # --referer: sem isto o i.pximg.net devolve 403. E a causa numero um de
+    # 'baixei e veio um arquivo de 0 bytes' com links do Pixiv.
+    # Baixa para .parcial e so promove no sucesso: um arquivo truncado no lugar
+    # final faria o probe considerar feito e o swaybg mostrar tela preta.
+    run_as_user mkdir -p "$(dirname "$dest")"
+    if run_as_user wget --quiet --referer="https://www.pixiv.net/" \
+            --user-agent="Mozilla/5.0" -O "$dest.parcial" "$DESKTOP_WALLPAPER_URL" \
+       && [[ -s "$dest.parcial" ]]; then
+        run_as_user mv "$dest.parcial" "$dest"
+        log_info "papel de parede salvo em '$dest'"
+    else
+        run_as_user rm -f "$dest.parcial"
+        log_warn "NAO consegui baixar o papel de parede."
+        log_warn "O Pixiv exige o cabecalho Referer (ja enviado) e pode exigir sessao autenticada para algumas obras."
+        log_warn "Baixe a imagem manualmente pela pagina https://www.pixiv.net/en/artworks/115453639 e salve em: $dest"
+        log_warn "Depois rode: ./desktop/install-desktop.sh --only 14"
+        log_warn "Ate la o swaybg usa a cor solida — a sessao sobe normalmente."
+    fi
+}
+
+# A ordem aqui tem de ser EXATAMENTE a dos run_step abaixo — o teste
+# test-desktop.sh compara as duas listas. O plano impresso pelo --dry-run e o
+# comando que o usuario roda para se informar; se ele mente por omissao ou por
+# ordem trocada, e pior que nao existir.
+dry_run_guard 14-wallpaper 14-niri-config 14-fontconfig 14-gtk-theme 14-bar-config 14-terminal-config 14-shell
+
+# O wallpaper vem ANTES do config do niri: o do_niri_config so declara o
+# `swaybg -i` se a imagem JA existe no disco (senao cai na cor solida), entao o
+# download precisa ter acontecido — ou falhado com aviso — antes desta decisao.
+run_step 14-wallpaper       probe_wallpaper       do_wallpaper
 
 run_step 14-niri-config     probe_niri_config     do_niri_config
 
@@ -1389,6 +1538,7 @@ run_step 14-fontconfig      probe_fontconfig      do_fontconfig
 run_step 14-gtk-theme       probe_gtk_theme       do_gtk_theme
 run_step 14-bar-config      probe_bar_config      do_bar_config
 run_step 14-terminal-config probe_terminal_config do_terminal_config
+run_step 14-shell           probe_shell           do_shell
 
 log_info "==== 14-dotfiles concluido com sucesso ===="
 log_info "todos os arquivos foram escritos como '$DESKTOP_USER' — nenhum dotfile com dono root"
