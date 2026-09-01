@@ -563,31 +563,63 @@ EOF
     base="${ver%%-r*}"
     log_info "nvidia-drivers resolvido em runtime: $ver (minimo Blackwell: $NVIDIA_MIN_VER)"
 
-    # Ramo 580.x: USE kernel-open e OBRIGATORIO para Blackwell (GSP-only).
-    # Em >=595 o flag nao existe mais (modulos abertos sempre) — nesse caso
-    # removemos nosso arquivo para nao poluir com USE de flag inexistente.
+    # USE do nvidia-drivers. Dois assuntos independentes no mesmo arquivo:
+    #
+    # (a) -tools : SEMPRE. O flag 'tools' vem ligado por default e instala o
+    #     nvidia-settings, que puxa gtk+ -> librsvg -> adwaita-icon-theme ->
+    #     cairo[X] e freetype[harfbuzz]. Num sistema base recem-instalado
+    #     nenhum desses USE esta ligado, entao o emerge PARA pedindo
+    #     --autounmask-write em vez de instalar (visto no smoke-test QEMU de
+    #     2026-09-01). Este instalador entrega um sistema BASE bootavel, nao um
+    #     desktop: o modulo de kernel e as bibliotecas do driver bastam.
+    #     nvidia-settings e coisa de quem ja tem ambiente grafico — quem quiser
+    #     re-emerge com USE=tools depois, junto do desktop.
+    #     NAO usamos --autounmask-write de proposito: ele reescreve arquivos de
+    #     configuracao do portage sozinho, e um instalador nao deve tomar essa
+    #     decisao pelo operador.
+    #     'X' fica LIGADA (default): e o suporte a X11 do proprio driver, nao
+    #     puxa a arvore do GTK, e a maquina alvo vai rodar ambiente grafico.
+    #
+    # (b) kernel-open : SO no ramo 580.x, onde e OBRIGATORIO para Blackwell
+    #     (GSP-only). Em >=595 o flag nao existe mais (modulos abertos sempre) e
+    #     declara-lo quebraria o emerge com "unknown USE flag".
     mkdir -p /etc/portage/package.use
     if [[ "$base" == 580.* ]]; then
         cat > /etc/portage/package.use/nvidia-drivers <<'EOF'
-# Gerado por 04-kernel.sh — ramo 580.x: kernel-open obrigatorio p/ Blackwell
-x11-drivers/nvidia-drivers kernel-open
+# Gerado por 04-kernel.sh
+# -tools: nvidia-settings puxa a arvore do GTK, que um sistema base nao tem.
+# kernel-open: obrigatorio no ramo 580.x para Blackwell (GSP-only).
+x11-drivers/nvidia-drivers -tools kernel-open
 EOF
-        log_info "ramo 580.x: package.use/nvidia-drivers com kernel-open gravado"
+        log_info "ramo 580.x: package.use/nvidia-drivers gravado (-tools kernel-open)"
     else
-        # arquivo e NOSSO (so este script o escreve) — remover e seguro
-        rm -f /etc/portage/package.use/nvidia-drivers
-        # ...mas remover o NOSSO arquivo nao basta: em >=595 o flag kernel-open
-        # nao existe mais e o emerge morre com "unknown USE flag". Se o usuario
-        # deixou kernel-open em OUTRO arquivo do package.use/ ou no make.conf,
-        # a falha so apareceria depois de horas de compilacao. Varremos antes
-        # e abortamos com mensagem acionavel (fail-closed).
+        cat > /etc/portage/package.use/nvidia-drivers <<'EOF'
+# Gerado por 04-kernel.sh
+# -tools: nvidia-settings puxa gtk+/librsvg/cairo[X]/freetype[harfbuzz], que um
+# sistema base nao tem — o emerge pararia pedindo --autounmask-write.
+# Sem kernel-open: em >=595 o flag nao existe (modulos abertos sao sempre usados).
+x11-drivers/nvidia-drivers -tools
+EOF
+        log_info "package.use/nvidia-drivers gravado (-tools; sem kernel-open neste ramo)"
+        # Nosso arquivo nao declara kernel-open neste ramo, mas isso nao basta:
+        # em >=595 o flag nao existe mais e o emerge morre com "unknown USE
+        # flag". Se o usuario deixou o flag em OUTRO arquivo do package.use/ ou
+        # no make.conf, a falha so apareceria depois de horas de compilacao.
+        # Varremos antes e abortamos com mensagem acionavel (fail-closed).
+        #
+        # A varredura IGNORA linhas de comentario. Sem isso ela acusaria o
+        # proprio arquivo que este script acabou de escrever, cuja documentacao
+        # menciona o flag ao explicar por que nao o usa — o mesmo tipo de
+        # auto-sabotagem que ja aconteceu no probe do /etc/default/grub.
         local -a stray=()
         local f
         if [[ -d /etc/portage/package.use ]]; then
             while IFS= read -r f; do
-                stray+=("$f")
-            done < <(grep -rlsE '(^|[[:space:]])-?kernel-open([[:space:]]|$)' \
-                        /etc/portage/package.use 2>/dev/null || true)
+                if grep -vE '^[[:space:]]*#' "$f" 2>/dev/null \
+                   | grep -qE '(^|[[:space:]])-?kernel-open([[:space:]]|$)'; then
+                    stray+=("$f")
+                fi
+            done < <(find /etc/portage/package.use -type f 2>/dev/null || true)
         fi
         # make.conf: so o USE global importa (linhas comentadas nao contam)
         if [[ -f /etc/portage/make.conf ]] \

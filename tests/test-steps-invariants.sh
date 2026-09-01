@@ -127,6 +127,71 @@ else
     no "vars.sh nao documenta que skip nao remove nada"
 fi
 
+# --- USE do nvidia-drivers: -tools em TODOS os ramos ---------------------
+# 'tools' vem ligado por default e instala o nvidia-settings, que puxa
+# gtk+ -> librsvg -> adwaita -> cairo[X] / freetype[harfbuzz]. Num sistema base
+# esses USE nao estao ligados e o emerge PARA pedindo --autounmask-write.
+dn="$(extract_fn "$KERNEL_SH" do_nvidia)"
+heredocs="$(grep -c 'x11-drivers/nvidia-drivers -tools' <<< "$dn" || true)"
+if (( heredocs >= 2 )); then
+    ok "package.use/nvidia-drivers fixa -tools nos dois ramos (580.x e >=595)"
+else
+    no "-tools nao esta fixado em todos os ramos do do_nvidia" \
+       "encontrei $heredocs ocorrencia(s); ramo sem -tools trava o emerge no autounmask"
+fi
+# kernel-open so pode aparecer como flag ATIVO no ramo 580.x.
+if grep -qE '^x11-drivers/nvidia-drivers .*[^-]kernel-open' <<< "$dn"; then
+    ok "kernel-open aparece como flag ativo (ramo 580.x)"
+else
+    no "kernel-open sumiu do ramo 580.x (obrigatorio para Blackwell no 580)"
+fi
+# O instalador nao pode reescrever config do portage sozinho.
+# Ignora comentarios: a documentacao do proprio codigo explica por que NAO usa
+# a flag, e citaria a si mesma.
+au="$(grep -rnE '^[^#]*--autounmask-write' "$REPO_DIR"/*.sh || true)"
+if [[ -n "$au" ]]; then
+    no "algum script usa --autounmask-write (reescreve config do portage sem o operador)" "$au"
+else
+    ok "nenhum script usa --autounmask-write (so mencionado em comentario)"
+fi
+
+# --- a varredura de kernel-open nao pode acusar o proprio arquivo --------
+# Regressao do tipo "probe reprova o que o do_fn acabou de escrever": o arquivo
+# gerado MENCIONA kernel-open num comentario ao explicar por que nao o usa.
+scan_tmp="$(mktemp -d)"
+mkdir -p "$scan_tmp/package.use"
+# Extrai os corpos dos heredocs de package.use gerados pelo do_nvidia — o
+# conteudo REAL que vai para o disco, nao uma imitacao.
+awk '/<<.EOF.$/ { inhd=1; next } inhd && /^EOF$/ { inhd=0; print "---FIM---"; next } inhd { print }' \
+    <<< "$dn" > "$scan_tmp/heredocs.txt"
+n=0
+while IFS= read -r line; do
+    if [[ "$line" == "---FIM---" ]]; then n=$((n+1)); continue; fi
+    printf '%s\n' "$line" >> "$scan_tmp/package.use/gerado-$n"
+done < "$scan_tmp/heredocs.txt"
+printf '# comentario do usuario mencionando kernel-open\nx11-drivers/nvidia-drivers kernel-open\n' \
+    > "$scan_tmp/package.use/do-usuario"
+
+found=()
+while IFS= read -r f; do
+    if grep -vE '^[[:space:]]*#' "$f" 2>/dev/null \
+       | grep -qE '(^|[[:space:]])-?kernel-open([[:space:]]|$)'; then
+        found+=("$(basename "$f")")
+    fi
+done < <(find "$scan_tmp/package.use" -type f | sort)
+ngen="$(find "$scan_tmp/package.use" -name 'gerado-*' | wc -l)"
+rm -rf "$scan_tmp"
+
+if (( ngen < 2 )); then
+    no "nao consegui extrair os dois heredocs de package.use do do_nvidia" "extrai $ngen"
+elif [[ "${found[*]}" == "do-usuario" ]]; then
+    ok "varredura de kernel-open: acusa o arquivo do usuario, ignora os $ngen gerados"
+elif [[ "${found[*]}" == *"gerado-0"* ]]; then
+    ok "ramo 580.x declara kernel-open de verdade (esperado); usuario tambem acusado"
+else
+    no "varredura de kernel-open com resultado errado" "acusou: ${found[*]:-nada}"
+fi
+
 # ==========================================================================
 # 4. Branch systemd (NUNCA executado — asercoes estaticas)
 # ==========================================================================
