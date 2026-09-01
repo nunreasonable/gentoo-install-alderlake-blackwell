@@ -834,8 +834,14 @@ preflight_hardware() {
     fi
 
     # --- GPU NVIDIA (NUNCA fatal: a VM do README nao tem GPU passada) ---
+    #
+    # O `|| true` NAO e cosmetico: sem ele o grep sai com 1 quando nao casa
+    # nada (= nenhuma GPU NVIDIA), o pipefail propaga esse 1 para a atribuicao
+    # e o set -e mata o preflight inteiro — exatamente no caso que as linhas
+    # abaixo tratam como AVISO. Bug real, visto num smoke-test em QEMU: a
+    # tabela morria entre 'placa' e 'gpu'. Mesmo padrao ja usado em gpu_lines.
     local nv_line=""
-    nv_line="$(lspci -nn -d 10de: 2>/dev/null | grep -iE 'vga|3d controller|display controller' | _pf_first_line)"
+    nv_line="$(lspci -nn -d 10de: 2>/dev/null | grep -iE 'vga|3d controller|display controller' | _pf_first_line || true)"
     if [[ -n "$nv_line" ]]; then
         PREFLIGHT_GPU_NVIDIA="yes"
         # 2d04 = GB206 (RTX 5060 Ti). Match por device id quando legivel; a
@@ -863,7 +869,9 @@ preflight_hardware() {
 
     # --- Storage: controlador NVMe + disco alvo (FATAL se o alvo nao serve) ---
     local nvme_ctrl
-    nvme_ctrl="$(lspci 2>/dev/null | grep -i 'non-volatile memory controller' | _pf_first_line)"
+    # `|| true`: numa VM com disco virtio nao existe controlador NVMe, o grep
+    # sai 1 e o pipefail derrubaria o preflight. Ausencia e tratada abaixo.
+    nvme_ctrl="$(lspci 2>/dev/null | grep -i 'non-volatile memory controller' | _pf_first_line || true)"
     if [[ -n "$nvme_ctrl" ]]; then
         _pf_row PASS "storage.nvme" "$nvme_ctrl"
     elif [[ "$is_vm" == "yes" ]]; then
@@ -908,8 +916,10 @@ preflight_hardware() {
     _pf_row PASS "iommu" "$iommu_state"
 
     local net_ctrl audio_ctrl
-    net_ctrl="$(lspci 2>/dev/null | grep -iE 'ethernet controller|network controller' | _pf_first_line)"
-    audio_ctrl="$(lspci 2>/dev/null | grep -i 'audio device' | _pf_first_line)"
+    # `|| true` nos dois: grep sem match sai 1 e o pipefail derrubaria o
+    # preflight. Ausencia de rede/audio e tratada logo abaixo como AVISO.
+    net_ctrl="$(lspci 2>/dev/null | grep -iE 'ethernet controller|network controller' | _pf_first_line || true)"
+    audio_ctrl="$(lspci 2>/dev/null | grep -i 'audio device' | _pf_first_line || true)"
     if [[ -n "$net_ctrl" ]]; then
         _pf_row PASS "rede" "$net_ctrl"
     else
