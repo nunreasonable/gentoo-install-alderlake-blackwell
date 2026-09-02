@@ -193,4 +193,63 @@ else
     rm -rf "$GTMP"
 fi
 
+# --- ROOT_FS esquecido no ambiente nao pode propor destruir a instalacao -----
+# Regressao de 2026-09-02 (Ciclo 3): `./install.sh` sem ROOT_FS=btrfs, sobre uma
+# instalacao btrfs pronta. O vars.sh faz `: "${ROOT_FS:=ext4}"`, o probe comparou
+# ext4 (declarado) com btrfs (real), reportou nao-feito e chamou do_mkfs_root.
+# Os guards barraram, mas a mensagem ("desmonte antes de reformatar") levava o
+# operador a remover o guard que o salvou.
+printf '\n  -- ROOT_FS ausente do ambiente --\n'
+
+fn="$(extract_fn "$REPO_DIR/00-partition.sh" _assert_root_fs_not_forgotten)"
+if [[ -z "$fn" ]]; then
+    no "00-partition nao tem _assert_root_fs_not_forgotten"
+else
+    ok "00-partition tem o diagnostico _assert_root_fs_not_forgotten"
+
+    FTMP="$(mktemp -d)"
+    # run_forgotten <ROOT_FS declarado> <fs real no disco> <GPT_RECREATED>
+    run_forgotten() {
+        make_stub "$FTMP/stubs" blkid "printf '%s\n' '$2'"
+        PATH="$FTMP/stubs:$PATH" ROOT_FS="$1" bash -c '
+            set -uo pipefail
+            SCRIPT_DIR="$1"; source "$1/vars.sh"; source "$1/lib.sh"
+            trap - ERR
+            GPT_RECREATED="$3"
+            _fs_type() { blkid -s TYPE -o value "$1" 2>/dev/null || true; }
+            eval "$2"
+            _assert_root_fs_not_forgotten /dev/fake3
+            printf "EXIT=%s\n" "$?"
+        ' _ "$REPO_DIR" "$fn" "$3" 2>&1
+    }
+
+    # 1. O caso real: declarado ext4 (default), disco btrfs, GPT intacto.
+    out="$(run_forgotten ext4 btrfs no)"
+    if grep -q '^EXIT=0' <<< "$out"; then
+        no "aceitou reformatar btrfs quando ROOT_FS caiu no default ext4" "$out"
+    else
+        ok "barra reformatar btrfs quando ROOT_FS caiu no default ext4"
+    fi
+    assert_contains "$out" "ROOT_FS=btrfs" "a mensagem da o comando para RETOMAR"
+    assert_contains "$out" "--repartition" "a mensagem da o comando para realmente refazer"
+
+    # 2. Disco em branco: instalacao nova tem de seguir.
+    out="$(run_forgotten ext4 "" no)"
+    assert_contains "$out" "EXIT=0" "disco sem filesystem segue para o mkfs (instalacao nova)"
+
+    # 3. Tipo bate: nada a diagnosticar.
+    out="$(run_forgotten btrfs btrfs no)"
+    assert_contains "$out" "EXIT=0" "tipo declarado igual ao real nao dispara o diagnostico"
+
+    # 4. --reset --repartition: o do_gpt rodou e a destruicao ja foi confirmada.
+    out="$(run_forgotten ext4 btrfs yes)"
+    assert_contains "$out" "EXIT=0" "GPT recriado nesta execucao libera a troca de filesystem"
+
+    # 5. Filesystem alheio (disco de outro SO): segue para o prompt REFORMAT.
+    out="$(run_forgotten ext4 ntfs no)"
+    assert_contains "$out" "EXIT=0" "filesystem nao suportado (ntfs) segue para o prompt REFORMAT"
+
+    rm -rf "$FTMP"
+fi
+
 finish

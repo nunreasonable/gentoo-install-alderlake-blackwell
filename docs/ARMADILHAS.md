@@ -851,6 +851,32 @@ filesystem — que e exatamente este caso.
 Se o `prefix` estiver errado ou vazio, o problema e outro: o `grub-install` nao
 detectou o local do `/boot`, e a causa esta antes.
 
+### `ROOT_FS` precisa estar no ambiente em TODA execucao
+
+O `vars.sh` tem `: "${ROOT_FS:=ext4}"`. Quem instala com `ROOT_FS=btrfs` na
+linha de comando e depois **retoma** com um `./install.sh` pelado esta
+declarando `ext4` sem perceber. O probe do `00-mkfs-root` compara o tipo real
+com o declarado, ve divergencia, e conclui que falta formatar a raiz — de uma
+instalacao pronta.
+
+```
+[AVISO] [00-mkfs-root] marker existia mas o probe reporta nao-feito
+[ERRO]  particao /dev/vda3 esta montada em '/mnt/gentoo' — desmonte antes de reformatar
+```
+
+O `ERRO` acima e um guard funcionando, **nao** uma instrucao a seguir: desmontar
+e re-executar remove exatamente a protecao que impediu a perda. O instalador
+hoje diagnostica isso antes (`_assert_root_fs_not_forgotten`) e imprime o
+comando certo, mas a regra continua valendo:
+
+```sh
+ROOT_FS=btrfs ./install.sh          # retomar
+ROOT_FS=btrfs ./tests/run-in-qemu-guest.sh
+```
+
+O perfil da VM **nao** define `ROOT_FS`, de proposito — ele fixa so o que e
+especifico da VM (`TARGET_DISK=/dev/vda`).
+
 ---
 
 ## 17. Entrada de boot falsa: arquivos em `/boot` que casam com `kernel-*`

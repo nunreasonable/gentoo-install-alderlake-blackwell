@@ -358,7 +358,41 @@ probe_mkfs_root() {
     [[ "$(_fs_type "$ROOT_PART")" == "$ROOT_FS" ]]
 }
 
+# Distingue "quero trocar o filesystem da raiz" de "esqueci de passar ROOT_FS".
+#
+# probe_mkfs_root compara o tipo REAL com $ROOT_FS. Como o vars.sh tem
+# `: "${ROOT_FS:=ext4}"`, uma reexecucao SEM ROOT_FS no ambiente declara ext4,
+# ve btrfs no disco e conclui "falta formatar" — propondo destruir uma
+# instalacao pronta. Os guards seguintes (montagem, REFORMAT) barram a
+# destruicao, mas nenhum deles diz a CAUSA, e "desmonte antes de reformatar"
+# leva o operador a remover justamente o guard que o salvou.
+#
+# Um filesystem suportado, diferente do declarado, com o layout GPT intacto
+# (do_gpt nao rodou nesta execucao), e quase sempre a variavel faltando. Trocar
+# de filesystem de proposito tem caminho explicito: --reset --repartition.
+#
+# Filesystem NAO suportado (ntfs, vfat de outro SO) nao cai aqui: esse e o caso
+# legitimo de reaproveitar disco alheio, e segue com o prompt REFORMAT.
+#
+# Observado na VM em 2026-09-02: `./install.sh` sem ROOT_FS=btrfs, depois de uma
+# instalacao btrfs completa, chegou a chamar do_mkfs_root.
+_assert_root_fs_not_forgotten() {
+    local dev="$1" fstype
+    [[ "$GPT_RECREATED" == "no" ]] || return 0
+    fstype="$(_fs_type "$dev")"
+    [[ -n "$fstype" && "$fstype" != "$ROOT_FS" ]] || return 0
+    case "$fstype" in
+        ext4 | xfs | btrfs) ;;
+        *) return 0 ;;
+    esac
+    die "a raiz $dev ja contem um filesystem '$fstype', mas esta execucao declara ROOT_FS='$ROOT_FS'. O layout GPT esta intacto, entao isto quase sempre e a variavel faltando no ambiente — nao um pedido de troca de filesystem. Para RETOMAR a instalacao que esta no disco: ROOT_FS=$fstype ./install.sh. Para realmente refazer a raiz como '$ROOT_FS', destruindo o que esta la: ./install.sh --reset --repartition."
+}
+
 do_mkfs_root() {
+    # Diagnostico ANTES dos guards genericos: se a causa for ROOT_FS ausente, e
+    # esta mensagem que o operador precisa ler, nao "desmonte antes de
+    # reformatar".
+    _assert_root_fs_not_forgotten "$ROOT_PART"
     _assert_not_mounted_elsewhere "$ROOT_PART"
     _confirm_reformat "$ROOT_PART"
     # -F/-f: o probe ja disse que o filesystem atual esta errado/ausente e a

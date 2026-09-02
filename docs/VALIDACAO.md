@@ -16,7 +16,7 @@ leitura de codigo.
 | Ciclos completos em QEMU/OVMF | **2** (instalacao ponta a ponta + boot) |
 | Bugs encontrados por execucao | **9** (8 no codigo, 1 de ergonomia) |
 | Bugs encontrados por analise estatica | **0** dos 9 acima |
-| Suite de testes do host | 10 grupos, **458 asercoes**, exit 0 |
+| Suite de testes do host | 10 grupos, **466 asercoes**, exit 0 |
 | Validado em hardware fisico | **nada** |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
@@ -471,11 +471,50 @@ Seis asercoes novas comparam a sentinela contra os cinco globs reais do GRUB.
 > **kernel** precisa e esqueci do que o **GRUB** faz. Os dois foram achados
 > lendo a saida do instalador, nao por analise estatica.
 
+### 3.3 — `./install.sh` sem `ROOT_FS` propunha reformatar a raiz pronta
+
+Ao reexecutar o instalador sobre a instalacao btrfs recem-concluida, sem
+`ROOT_FS=btrfs` no ambiente:
+
+```
+[AVISO] [00-mkfs-root] marker existia mas o probe reporta nao-feito — marker obsoleto removido, re-executando
+[00-mkfs-root] executando...
+[ERRO] particao /dev/vda3 esta montada em '/mnt/gentoo' — desmonte antes de reformatar
+```
+
+O `vars.sh` faz `: "${ROOT_FS:=ext4}"`. Sem a variavel no ambiente a execucao
+declara `ext4`, o `probe_mkfs_root` compara com o `btrfs` real, reporta
+nao-feito, e o `run_step` chama `do_mkfs_root`.
+
+**Nada foi destruido.** Dois guards independentes barraram, na ordem: a
+particao montada, e — se estivesse desmontada — o prompt `REFORMAT /dev/vda3`,
+que por design **nao** e dispensado por `AUTO_CONFIRM=yes`. O comportamento
+destrutivo estava corretamente contido.
+
+O defeito era de **diagnostico**: nenhuma das mensagens dizia a causa, e
+"desmonte antes de reformatar" instrui o operador a remover justamente o guard
+que o salvou.
+
+**Correcao:** `_assert_root_fs_not_forgotten`, chamada antes dos outros dois
+guards. Quando a raiz ja contem um filesystem **suportado** diferente do
+declarado e o layout GPT esta intacto (`do_gpt` nao rodou nesta execucao), ela
+aborta nomeando os dois filesystems e imprimindo os dois comandos possiveis:
+`ROOT_FS=<real> ./install.sh` para retomar, `--reset --repartition` para
+realmente refazer. Filesystem nao suportado (ntfs, vfat de outro SO) nao cai
+nesse caminho — esse e o caso legitimo de reaproveitar disco alheio, e segue
+para o prompt `REFORMAT`.
+
+Oito asercoes cobrem a matriz: caso real, disco em branco, tipos iguais, GPT
+recriado e filesystem alheio.
+
+> Achado por **operacao**, nao por execucao do codigo de teste: a instrucao que
+> eu mesmo dei ao operador omitia a variavel.
+
 ---
 
 ### Confianca operacional
 
 | | |
 |---|---|
-| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 458 asercoes. Nao validada em bare metal nem com btrfs |
+| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 466 asercoes. Nao validada em bare metal nem com btrfs |
 | Desktop | **Baixa, inalterada** — nunca executado. Esta rodada melhorou consistencia e cobertura de teste; nao substitui execucao |

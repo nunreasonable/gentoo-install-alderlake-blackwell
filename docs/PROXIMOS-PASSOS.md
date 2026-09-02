@@ -17,7 +17,7 @@ mais. Diz onde as coisas pararam, o que fazer a seguir e como sair do buraco.
 | Bare metal | **Nunca** |
 | WiFi (`iwd`) no sistema instalado | Implementado, **nunca executado** |
 
-Suíte do host: `./tests/run-tests.sh` → 458 asserções. Testes estáticos não
+Suíte do host: `./tests/run-tests.sh` → 466 asserções. Testes estáticos não
 provam boot.
 
 ---
@@ -112,6 +112,17 @@ Depois do boot: `/var/log/gentoo-install/`.
 
 **Retomar:** `./install.sh` de novo. O probe reexamina o disco e pula o que já
 está feito — inclusive depois de reiniciar o live ISO.
+
+**Retomando com `ROOT_FS=btrfs`, repita a variável:** ela não fica gravada em
+lugar nenhum, e o `vars.sh` cai no default `ext4`. Sem ela o `00` vê btrfs no
+disco, conclui que falta formatar e propõe destruir a instalação pronta:
+
+```sh
+ROOT_FS=btrfs ./install.sh
+```
+
+O instalador diagnostica esse caso e aborta com o comando certo, mas repetir a
+variável é mais barato do que ler o diagnóstico.
 
 **Senha não entra no primeiro login:** layout de teclado. No GRUB tecle `e`,
 acrescente `rw init=/bin/bash` na linha `linux`, `Ctrl+X`, e rode `passwd`.
