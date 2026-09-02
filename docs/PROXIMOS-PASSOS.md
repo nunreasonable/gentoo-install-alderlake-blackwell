@@ -3,7 +3,7 @@
 Escrito para ser lido **do telefone**, quando a máquina de trabalho não existir
 mais. Diz onde as coisas pararam, o que fazer a seguir e como sair do buraco.
 
-Última atualização: 2026-09-01, fim do dia.
+Última atualização: 2026-09-02 — após o Ciclo 3 (btrfs instalou, não bootou).
 
 ---
 
@@ -11,31 +11,45 @@ mais. Diz onde as coisas pararam, o que fazer a seguir e como sair do buraco.
 
 | | |
 |---|---|
-| Instalador `00`–`06` | **Duas instalações completas em QEMU + boot** (ext4, OpenRC) |
+| Instalador `00`–`06` (ext4) | **Duas instalações completas em QEMU + boot** (OpenRC) |
+| `ROOT_FS=btrfs` | **Instalou, não bootou** — `block-group-tree`. Corrigido; **aguardando reexecução** |
 | Módulo `desktop/` (niri) | Escrito, **nunca executado** |
-| `ROOT_FS=btrfs` | Implementado, **nunca executado** |
 | Bare metal | **Nunca** |
+| WiFi (`iwd`) no sistema instalado | Implementado, **nunca executado** |
 
-Suíte do host: `./tests/run-tests.sh` → 432 asserções. Testes estáticos não
+Suíte do host: `./tests/run-tests.sh` → 450 asserções. Testes estáticos não
 provam boot.
 
 ---
 
 ## O plano
 
-**1. btrfs na VM** (próxima sessão, ~1h de máquina)
+**1. btrfs na VM — REEXECUCAO** (o disco atual tem a raiz quebrada)
 
 ```sh
 cd ~/gentoo-install-alderlake-blackwell && git pull
-ROOT_FS=btrfs ./tests/run-in-qemu-guest.sh
+ROOT_FS=btrfs ./tests/run-in-qemu-guest.sh --reset --repartition
 ```
 
-O `ROOT_FS` do ambiente atravessa — o perfil da VM não o define.
+O `--reset --repartition` e necessario: a raiz atual foi criada **com**
+`block-group-tree`, e o portao novo do `05` vai reprova-la — corretamente. Ela
+precisa ser recriada pelo `00`, que agora passa `-O ^block-group-tree`.
 
-> **Não é travamento:** o disco da VM já tem a instalação anterior em ext4. O
-> `probe_mkfs_root` vê `ext4 ≠ btrfs` e dispara o `_confirm_reformat`, que pede
-> para digitar `REFORMAT /dev/vda3` e **não** é pulado por `AUTO_CONFIRM=yes`.
-> É a guarda funcionando. Esse caminho nunca rodou antes.
+O `ROOT_FS` do ambiente atravessa: o perfil da VM nao o define. O sinal de que
+pegou e o prompt pedindo `REFORMAT /dev/vda3` — que **nao** e pulado por
+`AUTO_CONFIRM=yes`, de proposito.
+
+**O que observar**, na ordem em que aparece:
+
+| Momento | O que confirma |
+|---|---|
+| `00` | `mkfs.btrfs -f -O ^block-group-tree` na linha de comando do log |
+| `04` | `verify_kconfig` aprovando, com `BTRFS_FS` no array required |
+| `05` | a linha `raiz btrfs sem block-group-tree — legivel pelo GRUB` |
+| boot | nao cair em `grub rescue` |
+
+Se cair em `grub rescue` de novo: `set` e `ls (hd0,gpt3)/` no proprio prompt.
+Foi o que resolveu da ultima vez — cada saida elimina uma hipotese.
 
 **2. Bare metal** — só depois que a VM fechar com boot.
 

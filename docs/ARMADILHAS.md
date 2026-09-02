@@ -5,9 +5,9 @@ pode dar errado, **como verificar ANTES** (comando exato + saida esperada) e o
 que fazer quando der errado.
 
 Le-se na ordem. As secoes 1–4 sao **antes de rodar o instalador**, as 5–7 sao
-**antes do primeiro reboot**, as 8–12 sao **no primeiro boot**, e as 13–15 sao
+**antes do primeiro reboot**, as 8–12 sao **no primeiro boot**, as 13–15 sao
 **recuperacao e limpeza** (retomar apos falha, hashes de senha que sobram,
-retomar com outra versao do instalador).
+retomar com outra versao do instalador) e a 16 e especifica de **btrfs**.
 
 > **Regra de ouro deste projeto:** nada aqui foi executado em hardware real.
 > Mantenha SEMPRE um live USB gravado e testado ao alcance, e **nao apague a
@@ -772,3 +772,80 @@ cat /mnt/gentoo/var/lib/gentoo-install/state/.installer
 
 Dentro do chroot os scripts nao estao num checkout git, entao o commit aparece
 como `nao-versionado`. Isso e esperado — o instalador nao inventa um SHA.
+
+---
+
+## 16. btrfs: `grub rescue> unknown filesystem` no primeiro boot
+
+**O que pode dar errado:** a instalacao com `ROOT_FS=btrfs` completa, todas as
+verificacoes passam — `grub.cfg` gerado e validado, kernel versionado em
+`/boot`, `root=PARTUUID` correto — e o primeiro boot cai em:
+
+```
+error: ...grub_fs_probe:122:unknown filesystem.
+Entering rescue mode...
+grub rescue>
+```
+
+**Causa:** o `mkfs.btrfs` moderno liga a feature **`block-group-tree`** por
+default, e o driver btrfs do GRUB **nao a suporta** — o `grub-core/fs/btrfs.c`
+nao tem uma referencia sequer ao simbolo. O GRUB tenta ler os block groups do
+jeito antigo, falha, e reporta o filesystem como desconhecido.
+
+Importa neste projeto porque o `/boot` vive **dentro da raiz**: o GRUB precisa
+ler btrfs para achar o proprio `grub.cfg`. Com `/boot` separado em ext4 a
+feature seria irrelevante.
+
+**Verifique ANTES do reboot**, com o alvo montado:
+
+```sh
+btrfs inspect-internal dump-super /dev/nvme0n1p3 | grep compat_ro_flags
+```
+
+Saida **boa** (sem a feature):
+
+```
+compat_ro_flags     0x3
+```
+
+Saida **ruim** — o bit 3 (`0x8`) ligado:
+
+```
+compat_ro_flags     0xb
+```
+
+`0xb` = `FREE_SPACE_TREE` + `FREE_SPACE_TREE_VALID` + **`BLOCK_GROUP_TREE`**.
+
+> O `05-bootloader.sh` ja faz essa checagem sozinho e **aborta antes do
+> `grub-install`** com mensagem explicita. Esta verificacao manual serve para
+> quem quer conferir por conta, ou esta diagnosticando um sistema criado por
+> outro caminho.
+
+**Se der errado:** o filesystem precisa ser **recriado** — nao ha como desligar
+`block-group-tree` num btrfs ja formatado. Do live ISO:
+
+```sh
+mkfs.btrfs -f -O '^block-group-tree' /dev/nvme0n1p3
+```
+
+E entao re-executar a instalacao. O `00-partition.sh` ja cria assim; este
+comando serve para consertar um disco feito por fora.
+
+**Alternativa:** `ROOT_FS=ext4`, que e o unico caminho com dois boots atras.
+
+### Diagnostico a partir do `grub rescue>`
+
+Se voce ja esta la, dois comandos identificam a causa sem chutar:
+
+```
+grub rescue> set
+grub rescue> ls
+```
+
+O `set` mostra o `prefix` e o `root` que o `grub-install` gravou. Se estiverem
+**corretos** (apontando para a particao raiz) e o `ls` **listar** as particoes,
+entao o enderecamento esta bom e o problema e o GRUB nao conseguir ABRIR o
+filesystem — que e exatamente este caso.
+
+Se o `prefix` estiver errado ou vazio, o problema e outro: o `grub-install` nao
+detectou o local do `/boot`, e a causa esta antes.
