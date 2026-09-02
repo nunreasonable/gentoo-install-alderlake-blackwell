@@ -369,10 +369,28 @@ do_mkfs_root() {
         ext4)  mkfs.ext4  -F "$ROOT_PART" ;;
         xfs)   mkfs.xfs   -f "$ROOT_PART" ;;
         # -f para sobrescrever assinatura anterior, como nos outros dois.
+        #
+        # -O ^block-group-tree e OBRIGATORIO, nao preferencia. O mkfs.btrfs
+        # moderno liga essa feature por DEFAULT, e o driver btrfs do GRUB NAO
+        # a suporta — ele nem sabe que ela existe (o btrfs.c do GRUB nao tem
+        # uma unica referencia a BLOCK_GROUP_TREE nem checa compat_ro). Com ela
+        # ligada o GRUB tenta ler os block groups do jeito antigo, falha, e
+        # reporta "unknown filesystem", caindo em `grub rescue>`.
+        #
+        # Isso importa AQUI porque neste layout o /boot vive DENTRO da raiz:
+        # o GRUB precisa ler btrfs para achar o proprio grub.cfg e o kernel.
+        # Com /boot separado em ext4 a feature seria irrelevante.
+        #
+        # Diagnosticado em VM em 2026-09-02: instalacao btrfs completa e
+        # aparentemente bem-sucedida que caiu em grub rescue no primeiro boot.
+        # compat_ro_flags valia 0xb = FREE_SPACE_TREE + _VALID + BLOCK_GROUP_TREE.
+        # Custo de desligar: mount marginalmente mais lento em filesystems
+        # gigantes. Irrelevante numa raiz de desktop.
+        #
         # Layout SIMPLES de proposito: um unico volume, sem subvolumes. O
         # instalador monta a raiz direto e o fstab do 03 nao carrega
         # subvol=... — quem quiser @/@home cria depois, com o sistema no ar.
-        btrfs) mkfs.btrfs -f "$ROOT_PART" ;;
+        btrfs) mkfs.btrfs -f -O '^block-group-tree' "$ROOT_PART" ;;
         *)     die "ROOT_FS='$ROOT_FS' inesperado (validate_vars deveria ter barrado)" ;;
     esac
 }

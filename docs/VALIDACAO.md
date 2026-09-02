@@ -16,7 +16,7 @@ leitura de codigo.
 | Ciclos completos em QEMU/OVMF | **2** (instalacao ponta a ponta + boot) |
 | Bugs encontrados por execucao | **9** (8 no codigo, 1 de ergonomia) |
 | Bugs encontrados por analise estatica | **0** dos 9 acima |
-| Suite de testes do host | 10 grupos, **444 asercoes**, exit 0 |
+| Suite de testes do host | 10 grupos, **450 asercoes**, exit 0 |
 | Validado em hardware fisico | **nada** |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
@@ -369,6 +369,72 @@ porta seria pior que a lacuna. Dai o teste unitario do mecanismo.
 Os itens B2-B8 do escopo pedido — etapas 10-15 em profundidade, NVIDIA/Wayland,
 perfil, GURU, servicos, configs de usuario e validacao grafica. Nao estao
 reportados como auditados porque nao foram.
+
+---
+
+## Ciclo 3 — btrfs (2026-09-02): instalacao completa, **boot falhou**
+
+**Ambiente:** o mesmo QEMU/OVMF, `ROOT_FS=btrfs`, sobre o disco do Ciclo 2.
+
+O `_confirm_reformat` disparou como projetado (pediu `REFORMAT /dev/vda3`, sem
+bypass por `AUTO_CONFIRM`) — primeira vez que esse caminho rodou. A instalacao
+completou. O primeiro boot caiu em:
+
+```
+error: ...grub_fs_probe:122:unknown filesystem.
+Entering rescue mode...
+grub rescue>
+```
+
+### 3.1 — `block-group-tree` torna a raiz ilegivel para o GRUB
+
+**Diagnostico, do `grub rescue>` para tras:**
+
+| Evidencia | O que descartou |
+|---|---|
+| `prefix='(hd0,gpt3)/boot/grub'`, `root='hd0,gpt3'` | o `grub-install` acertou o enderecamento |
+| `ls` mostra `(hd0,gpt1) (hd0,gpt2) (hd0,gpt3)` | o GRUB enxerga as particoes |
+| `/usr/lib/grub/x86_64-efi/btrfs.mod` existe (32 KB) | o modulo esta instalado |
+| `grub-probe --target=fs /boot/grub` → `btrfs` | a deteccao do `grub-install` funcionou |
+
+Sobrou uma causa: o GRUB nao consegue **abrir** o filesystem. As flags disseram
+qual:
+
+```
+compat_ro_flags   0xb    = FREE_SPACE_TREE + _VALID + BLOCK_GROUP_TREE
+incompat_flags    0x361  = MIXED_BACKREF + BIG_METADATA + EXTENDED_IREF
+                           + SKINNY_METADATA + NO_HOLES
+```
+
+Os `incompat` sao todos antigos e suportados. O culpado e o bit 3 do
+`compat_ro`: **`BLOCK_GROUP_TREE`** (`include/uapi/linux/btrfs.h` do kernel).
+O `mkfs.btrfs` moderno o liga **por default**, e o `grub-core/fs/btrfs.c` nao
+tem **uma unica referencia** ao simbolo nem checa `compat_ro` — ele tenta ler os
+block groups do jeito antigo, falha, e o probe generico reporta
+"unknown filesystem".
+
+**Correcao:** `mkfs.btrfs -f -O ^block-group-tree` no `00-partition.sh`.
+`--modules=btrfs` no `grub-install` **nao** resolveria: o modulo ja estava la.
+
+**A lacuna que isto expos:** o `05` verificava o **conteudo** dos arquivos —
+`grub.cfg` existe, referencia o kernel corrente, `PARTUUID` bate. Nenhuma
+verificacao perguntava se o GRUB consegue **abrir o filesystem em que eles
+estao**. Todas passaram num sistema que nao boota.
+
+Novo portao `assert_boot_fs_readable_by_grub` no `05`, antes do `grub-install`:
+com raiz btrfs, le `compat_ro_flags` e morre com mensagem acionavel se o bit 3
+estiver ligado. Cobre o caso de a raiz vir de outro lugar — `mkfs` a mao, disco
+reaproveitado, ou mudanca de default do btrfs-progs.
+
+**Testes:** `tests/test-root-fs.sh` ganhou 6 asercoes — o `mkfs` desliga a
+feature, e o portao reprova `0xb` (o valor real da VM) e aprova `0x3`.
+
+> Bug meu: adicionei `ROOT_FS=btrfs` cuidando do kernel (`BTRFS_FS=y`) e do
+> `btrfs-progs`, e **nao verifiquei o GRUB**. Neste layout o `/boot` vive dentro
+> da raiz, entao o bootloader tambem precisa ler o filesystem — uma terceira
+> ponta que passou despercebida.
+
+---
 
 ### Confianca operacional
 

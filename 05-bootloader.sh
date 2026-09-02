@@ -206,7 +206,48 @@ probe_grub_install() {
     fi
 }
 
+# assert_boot_fs_readable_by_grub: o GRUB tem de conseguir LER o filesystem que
+# guarda o /boot. Neste layout o /boot vive dentro da raiz, entao e a raiz.
+#
+# Existe porque uma instalacao btrfs completou com sucesso — grub.cfg gerado,
+# kernel versionado no lugar, PARTUUID correto, todas as verificacoes do 05
+# passando — e mesmo assim caiu em `grub rescue> unknown filesystem` no primeiro
+# boot. As verificacoes olhavam o CONTEUDO dos arquivos; nenhuma perguntava se o
+# GRUB conseguia abrir o filesystem em que eles estao.
+#
+# block-group-tree: feature que o mkfs.btrfs moderno liga por DEFAULT e que o
+# driver btrfs do GRUB nao suporta (o btrfs.c dele nao tem uma referencia ao
+# simbolo, nem checa compat_ro). O 00 cria com '-O ^block-group-tree'; este
+# portao cobre o caso de a raiz ter vindo de outro lugar — mkfs a mao, disco
+# reaproveitado, ou mudanca de default do btrfs-progs.
+assert_boot_fs_readable_by_grub() {
+    local fs
+    fs="$(root_fs_actual)" || return 0   # indeterminado: o 03 ja morreu antes
+    [[ "$fs" == "btrfs" ]] || return 0
+
+    command -v btrfs > /dev/null 2>&1 || {
+        log_warn "raiz e btrfs mas o comando 'btrfs' nao esta disponivel — nao da para conferir block-group-tree aqui; se o boot cair em 'grub rescue', e essa a causa provavel"
+        return 0
+    }
+
+    local compat_ro
+    compat_ro="$(btrfs inspect-internal dump-super "$ROOT_PART" 2>/dev/null \
+                 | awk '/^compat_ro_flags/ { print $2; exit }')"
+    [[ -n "$compat_ro" ]] || {
+        log_warn "nao consegui ler compat_ro_flags de $ROOT_PART — seguindo sem a verificacao de block-group-tree"
+        return 0
+    }
+
+    # bit 3 (0x8) = BTRFS_FEATURE_COMPAT_RO_BLOCK_GROUP_TREE
+    # (include/uapi/linux/btrfs.h do kernel)
+    if (( (compat_ro & 0x8) != 0 )); then
+        die "a raiz $ROOT_PART e btrfs com a feature 'block-group-tree' LIGADA (compat_ro_flags=$compat_ro). O driver btrfs do GRUB NAO le esse formato: o boot cairia em 'grub rescue> unknown filesystem', com tudo o mais aparentemente correto. Recrie a raiz com 'mkfs.btrfs -f -O ^block-group-tree $ROOT_PART' (o 00-partition.sh ja faz isso) e re-execute, OU use ROOT_FS=ext4."
+    fi
+    log_info "raiz btrfs sem block-group-tree — legivel pelo GRUB"
+}
+
 do_grub_install() {
+    assert_boot_fs_readable_by_grub
     local args=(--target=x86_64-efi --efi-directory=/efi)
     if [[ "$GRUB_REMOVABLE" == "yes" ]]; then
         args+=(--removable)

@@ -133,4 +133,64 @@ for pair in "xfs:xfsprogs" "btrfs:btrfs-progs"; do
     fi
 done
 
+# --- block-group-tree: o GRUB nao le, e o boot cai em rescue --------------
+# Regressao de 2026-09-02: instalacao btrfs completou com TUDO verificado
+# (grub.cfg, kernel versionado, PARTUUID correto) e caiu em
+# `grub rescue> unknown filesystem`. Causa: mkfs.btrfs moderno liga
+# block-group-tree por default e o driver btrfs do GRUB nao suporta.
+printf '\n  -- block-group-tree (GRUB) --\n'
+
+# 1. O mkfs desliga a feature
+mkfs_btrfs="$(grep -E '^\s+btrfs\)\s+mkfs\.btrfs' "$REPO_DIR/00-partition.sh" || true)"
+if grep -q '\^block-group-tree' <<< "$mkfs_btrfs"; then
+    ok "00-partition cria btrfs com -O ^block-group-tree"
+else
+    no "00-partition NAO desliga block-group-tree no mkfs.btrfs" \
+       "o GRUB nao leria a raiz e o boot cairia em rescue: $mkfs_btrfs"
+fi
+
+# 2. O portao do 05 reprova um fs com a feature ligada, e aprova sem ela.
+#    compat_ro_flags: bit 3 (0x8) = BLOCK_GROUP_TREE (uapi/linux/btrfs.h).
+guard_fn="$(extract_fn "$REPO_DIR/05-bootloader.sh" assert_boot_fs_readable_by_grub)"
+if [[ -z "$guard_fn" ]]; then
+    no "05-bootloader nao tem assert_boot_fs_readable_by_grub"
+else
+    ok "05-bootloader tem o portao assert_boot_fs_readable_by_grub"
+
+    GTMP="$(mktemp -d)"
+    run_guard() {
+        local flags="$1"
+        make_stub "$GTMP/stubs" btrfs "printf 'compat_ro_flags\t%s\n' '$flags'"
+        make_stub "$GTMP/stubs" blkid "printf 'btrfs\n'"
+        PATH="$GTMP/stubs:$PATH" bash -c '
+            set -uo pipefail
+            SCRIPT_DIR="$1"; source "$1/vars.sh"; source "$1/lib.sh"
+            trap - ERR
+            ROOT_PART=/dev/fake3
+            eval "$2"
+            assert_boot_fs_readable_by_grub
+            printf "EXIT=%s\n" "$?"
+        ' _ "$REPO_DIR" "$guard_fn" 2>&1
+    }
+
+    # 0xb = FREE_SPACE_TREE + _VALID + BLOCK_GROUP_TREE — foi o valor REAL da VM
+    out="$(run_guard 0xb)"
+    if grep -q '^EXIT=0' <<< "$out"; then
+        no "portao ACEITOU btrfs com block-group-tree (0xb)" "$out"
+    else
+        ok "portao reprova btrfs com block-group-tree (0xb — o caso real da VM)"
+    fi
+    assert_contains "$out" "block-group-tree" "a mensagem nomeia a feature culpada"
+    assert_contains "$out" "mkfs.btrfs" "a mensagem diz como corrigir"
+
+    # 0x3 = FREE_SPACE_TREE + _VALID, sem block-group-tree: tem de passar
+    out="$(run_guard 0x3)"
+    if grep -q '^EXIT=0' <<< "$out"; then
+        ok "portao aprova btrfs sem block-group-tree (0x3)"
+    else
+        no "portao reprovou um btrfs legitimo (0x3)" "$out"
+    fi
+    rm -rf "$GTMP"
+fi
+
 finish

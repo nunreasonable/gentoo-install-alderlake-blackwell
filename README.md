@@ -31,7 +31,7 @@ Esta secao e a informacao mais importante do repositorio. Ela e literal.
 | `bash -n` (sintaxe) em todos os scripts | **Passou** |
 | ShellCheck (container, repo montado read-only) | **Passou** |
 | Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
-| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 140 asercoes em 8 grupos |
+| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 450 asercoes em 10 grupos |
 
 ### Execucao em QEMU/OVMF — **dois ciclos completos, com boot** (2026-09-01)
 
@@ -119,6 +119,7 @@ cima de **todos**.
 | Re-execucao / resume apos falha real | **Executado ~9x** (involuntariamente, a cada bug) |
 | Reinstalacao sobre disco ja usado | **Executada** (Ciclo 2) |
 | Instalacao limpa com o codigo ATUAL, sem intervencao | **NUNCA** — cada ciclo corrigiu bugs no meio |
+| `ROOT_FS=btrfs` | **Instalou, mas NAO bootou** no Ciclo 3 (`block-group-tree`). Corrigido; a correcao ainda nao foi reexecutada |
 | Branch `INIT_SYSTEM=systemd` | **NUNCA** executado |
 
 ### Traduzindo
