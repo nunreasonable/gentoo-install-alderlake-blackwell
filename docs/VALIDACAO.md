@@ -16,7 +16,7 @@ leitura de codigo.
 | Ciclos completos em QEMU/OVMF | **2** (instalacao ponta a ponta + boot) |
 | Bugs encontrados por execucao | **9** (8 no codigo, 1 de ergonomia) |
 | Bugs encontrados por analise estatica | **0** dos 9 acima |
-| Suite de testes do host | 8 grupos, **140 asercoes**, exit 0 |
+| Suite de testes do host | 10 grupos, **444 asercoes**, exit 0 |
 | Validado em hardware fisico | **nada** |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
@@ -312,3 +312,67 @@ Dos nove bugs encontrados, **zero** eram detectaveis estaticamente:
 Os testes existem para impedir **reintroducao**, e cada um dos nove tem um
 teste que o guarda. Eles nao encontram a proxima classe de bug — cada condicao
 inicial nova (disco limpo, disco usado, hardware real) revela outra camada.
+
+---
+
+## Rodada de hardening — auditoria, sem execucao (2026-09-02)
+
+Auditoria dos dois componentes com criterios separados. **Nenhuma instalacao foi
+executada nesta rodada** — e uma revisao de codigo com testes, nao um ciclo.
+
+### Base `00`–`06`
+
+**Zero P0, zero P1.** As protecoes auditadas continuam corretas e nao foram
+tocadas. Dois P2, ambos introduzidos nas 24h anteriores (o codigo menos
+validado do repositorio):
+
+| Achado | Correcao |
+|---|---|
+| `CONFIG_CFG80211_CRDA_SUPPORT=n` adicionado especulativamente, com sintaxe divergente do resto do arquivo e sem beneficio demonstrado | Removido |
+| `fstab` escrevia `passno 1` para a raiz independente do tipo; com btrfs isso faz o boot depender do `btrfs-progs` so para rodar um stub que sai 0 | `passno` derivado do tipo real: 0 para btrfs, 1 para ext4/xfs |
+
+Verificacao que **nao** gerou mudanca: os simbolos de cripto do `iwd` que
+entraram no array `required` do `verify_kconfig` exigem `=y` estrito — se algum
+nao tivesse prompt, o portao bloquearia a instalacao com falha falsa. Conferidos
+no Kconfig do upstream: todos `tristate` com prompt, dependencias presentes no
+fragmento. **Correto como esta.**
+
+### Desktop `10`–`15`
+
+**Zero P0, zero P1. Um P2.**
+
+A premissa de que o `--dry-run` nao era enforcado **nao se confirmou**. Auditoria
+de mutacoes em nivel superior antes da guarda, em todos os numerados: a unica
+ocorrencia era uma *definicao de funcao*. As etapas 10-15 ja eram seguras.
+
+O problema real era o `10a`, que usava `die` inline em vez do guard no topo:
+seguro (nada mutava), mas saia com codigo != 0 e **abortava a cadeia** — um
+`--dry-run --with-profile-world` nunca chegava a mostrar 11-15. Alinhado.
+
+**Documentacao contradizia o codigo, na direcao perigosa:** o `desktop/README.md`
+afirmava que a flag **nao era enforcada** e mandava nao confiar nela. Descrevia
+um estado antigo — os guards foram adicionados depois daquele texto e o README
+nao acompanhou. Corrigido, com a tabela do que cada teste prova.
+
+`tests/test-desktop-dryrun.sh` (novo, 12 asercoes): snapshot de conteudo, dono e
+modo antes/depois, stubs que registram invocacao de comando mutavel, e teste
+unitario do proprio `dry_run_guard`.
+
+**Limite declarado no teste e no README:** fora de um Gentoo alvo os scripts
+param na guarda de fase, que vem antes da de dry-run. O snapshot prova "num host
+que nao e o alvo, nada muta" — valida a guarda de fase, nao o dry-run num Gentoo
+real. Alcancar a de dry-run exigiria uma porta para pular a de fase, e criar essa
+porta seria pior que a lacuna. Dai o teste unitario do mecanismo.
+
+### Nao auditado nesta rodada
+
+Os itens B2-B8 do escopo pedido — etapas 10-15 em profundidade, NVIDIA/Wayland,
+perfil, GURU, servicos, configs de usuario e validacao grafica. Nao estao
+reportados como auditados porque nao foram.
+
+### Confianca operacional
+
+| | |
+|---|---|
+| Base | **Alta** — dois ciclos completos + boot, nove bugs corrigidos, 444 asercoes. Nao validada em bare metal nem com btrfs |
+| Desktop | **Baixa, inalterada** — nunca executado. Esta rodada melhorou consistencia e cobertura de teste; nao substitui execucao |

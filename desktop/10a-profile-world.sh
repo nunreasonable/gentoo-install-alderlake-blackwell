@@ -144,6 +144,21 @@ if [[ "$_10a_autorizacao_explicita" == "no" ]] \
     DESKTOP_UPDATE_WORLD="yes"
 fi
 
+# Dry-run: MESMO contrato das etapas 10-15 — imprime o plano e sai com 0.
+#
+# Antes desta linha a 10a so fazia `die` la embaixo, dentro dos do_fn. Era
+# seguro (nada mutava), mas quebrava o contrato do orquestrador de duas formas:
+# saia com codigo != 0, e abortava a cadeia — um `--dry-run --with-profile-world`
+# nunca chegava a mostrar as etapas 11-15. Um dry-run que morre no meio nao
+# cumpre o proposito de mostrar o plano inteiro.
+#
+# As guardas inline dos do_fn FICAM, como defesa em profundidade: elas cobrem
+# quem chamar do_profile_switch/do_world_update por outro caminho.
+#
+# Os nomes ficam explicitos porque os run_step da 10a sao CONDICIONAIS (cada um
+# dentro de um if), entao nao ha lista literal para extrair do arquivo.
+dry_run_guard 10a-profile-switch 10a-world-update
+
 # Comando de atualizacao do @world usado tanto no --pretend quanto na execucao
 # real. Uma unica definicao para que a contagem MEDIDA e o que roda de verdade
 # nao possam divergir — se fossem duas listas separadas, o numero mostrado ao

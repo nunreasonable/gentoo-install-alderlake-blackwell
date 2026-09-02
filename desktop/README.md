@@ -18,7 +18,8 @@ instalador base (`install.sh`, `lib.sh`, `vars.sh`, `00-06`,
 Nao existe "validado" neste documento porque nao existe execucao. O que foi feito
 foi verificacao **estatica**:
 
-- 253 asercoes novas em `tests/test-desktop.sh` (total da suite: 393, 0 falhas);
+- asercoes em `tests/test-desktop.sh` e `tests/test-desktop-dryrun.sh`
+  (total da suite: 444, 0 falhas);
 - `bash -n` em todos os arquivos de `desktop/`;
 - ShellCheck reduzido a 5 `SC1091` inevitaveis (o linter nao segue `source` de
   `../lib.sh`);
@@ -273,31 +274,50 @@ Roda, nesta ordem: **10 -> 11 -> 12 -> 13 -> 15 -> 14**.
 | `--only <etapa>` | roda somente a etapa indicada (ex.: `--only 11`) |
 | `--from <etapa>` | comeca na etapa indicada e segue ate o fim |
 | `--with-profile-world` | **inclui a etapa 10a** (troca de perfil + `emerge -uDN @world`). Demora horas |
-| `--dry-run` | **ver o aviso abaixo — nao e enforcado** |
+| `--dry-run` | imprime o plano de cada etapa e **nao altera nada** — ver secao abaixo |
 | `--reset [marker]` | sem argumento, **lista** os markers; com argumento, remove **um** |
 | `-h`, `--help` | ajuda (sai antes de qualquer guarda) |
 
 `--from` e `--only` sao mutuamente exclusivos. `--from 10a` e recusado (a 10a e
 opt-in e nao tem posicao fixa na sequencia); use `--only 10a`.
 
-### `--dry-run` NAO E ENFORCADO — nao confie nele
+### `--dry-run`
 
-**Esta e a pendencia mais importante do modulo hoje.**
+O orquestrador repassa `DESKTOP_DRY_RUN=yes` por ambiente. Cada script numerado
+chama `dry_run_guard` **antes do primeiro `run_step`**: ela imprime o plano de
+sub-etapas, sai com **0**, e nada depois dela executa. Como todo efeito do modulo
+mora dentro de `run_step`, nenhum emerge roda, nenhuma config e escrita e nenhum
+servico e habilitado.
 
-O orquestrador anuncia *"nenhum emerge sera executado e nenhuma config sera
-escrita"* e repassa `DESKTOP_DRY_RUN=yes` por ambiente, mas **somente o
-`10a-profile-world.sh` consome essa variavel**. Os outros seis (10, 11, 12, 13,
-14, 15) a **ignoram**.
+> **Correcao de documentacao (2026-09-02).** Uma versao anterior deste README
+> dizia que a flag **nao era enforcada** e mandava nao confiar nela. Isso
+> descrevia um estado antigo — os guards foram adicionados depois daquele texto,
+> e o README nao acompanhou. A auditoria confirmou que os sete numerados
+> consomem a variavel; o `10a`, que era a excecao (usava `die` no meio em vez do
+> guard no topo, saindo com codigo != 0 e abortando a cadeia), foi alinhado.
 
-Na pratica, `--dry-run` hoje **roda emerge de verdade**, escreve em
-`/etc/portage`, habilita servicos e grava dotfiles. E uma promessa falsa numa
-flag cujo proposito e justamente seguranca.
+**O que esta provado, e por qual teste** (`tests/test-desktop-dryrun.sh`):
 
-**Nao use `--dry-run` esperando que ele seja seguro.** Se voce quiser ver o que
-seria feito sem tocar em nada, use `--list` e leia os scripts.
+| Afirmacao | Como e provada |
+|---|---|
+| `dry_run_guard` sai com 0 e **impede o codigo seguinte de executar** | Teste unitario, chamando a funcao direto |
+| Sem `--dry-run` a guarda e transparente | Teste unitario |
+| Todos os numerados consultam `DESKTOP_DRY_RUN` | Asercao estatica |
+| A guarda vem **antes** do primeiro `run_step` de cada script | Asercao estatica (`test-desktop.sh`) |
+| Nenhuma mutacao de nivel superior escapa antes da guarda | Auditoria + snapshot |
 
-Isso nao foi corrigido porque exigiria alterar os sete scripts numerados
-(mudanca de escopo proprio). Existe uma task registrada: `task_4c3724d8`.
+**O limite honesto.** O teste de snapshot roda os numerados num sandbox e compara
+hashes de conteudo, dono e modo. Mas **fora de um Gentoo alvo eles param na
+guarda de fase** (*"so roda no sistema instalado e bootado"*), que vem antes da
+de dry-run. Entao o snapshot prova *"num host que nao e o alvo, nada muta"* — o
+que valida a guarda de fase como fail-closed, e **nao** e o mesmo que provar o
+dry-run num Gentoo real. Alcancar a guarda de dry-run exigiria uma porta para
+pular a de fase, e criar essa porta seria pior que a lacuna que fecharia. Por
+isso o mecanismo tem teste unitario proprio.
+
+Traduzindo: **o dry-run e enforcado por construcao e testado no mecanismo**, mas
+o caminho completo num Gentoo instalado ainda nao foi observado — como nada
+neste modulo foi.
 
 ### Variaveis uteis
 

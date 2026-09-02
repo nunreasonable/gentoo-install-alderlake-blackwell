@@ -151,7 +151,12 @@ fi
 # que o trap ERR e o die() do lib.sh citam nas mensagens, e o `tee -a` acumula
 # re-execucoes do mesmo script no mesmo arquivo.
 init_logging_desktop() {
-    local script_name="$1" logdir="/var/log/gentoo-install"
+    # DESKTOP_LOG_DIR existe SO para testabilidade. Sem ele todo script morre
+    # nesta linha quando rodado sem root — ANTES de chegar na guarda de dry-run.
+    # O teste de snapshot que prova "o dry-run nao muta nada" provaria entao
+    # apenas "sem root nada muta", que e trivial e nao cobre o caso real.
+    # Em producao ninguem define a variavel e o caminho e o de sempre.
+    local script_name="$1" logdir="${DESKTOP_LOG_DIR:-/var/log/gentoo-install}"
     mkdir -p "$logdir" \
         || die "nao foi possivel criar $logdir — rode o modulo como root (sudo)."
     LOGFILE="$logdir/${script_name}.log"

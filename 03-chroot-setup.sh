@@ -360,7 +360,14 @@ do_fstab() {
         printf '# /etc/fstab — gerado por 03-chroot-setup.sh (instalacao automatizada)\n'
         printf '# Layout: 1=ESP (/efi), 2=swap, 3=raiz — UUIDs reais lidos via blkid.\n'
         printf '# <fs>\t\t\t\t\t\t<mountpoint>\t<type>\t<opts>\t\t<dump> <pass>\n'
-        printf 'UUID=%s\t/\t%s\tdefaults,noatime\t0 1\n' "$root_uuid" "$root_type"
+        # passno da raiz depende do TIPO: ext4/xfs usam fsck no boot (passno 1);
+        # btrfs NAO usa — o fsck.btrfs e um stub que sai 0 de proposito, e a
+        # verificacao real e o `btrfs scrub`, feito com o sistema no ar.
+        # Com passno 1 num btrfs o boot fica dependendo de o btrfs-progs estar
+        # instalado so para rodar um stub. Convencao (e o que o proprio
+        # btrfs-progs documenta): passno 0.
+        printf 'UUID=%s\t/\t%s\tdefaults,noatime\t0 %s\n' \
+            "$root_uuid" "$root_type" "$([[ "$root_type" == "btrfs" ]] && echo 0 || echo 1)"
         printf 'UUID=%s\t/efi\tvfat\tumask=0077\t0 2\n' "$efi_uuid"
         printf 'UUID=%s\tnone\tswap\tsw\t0 0\n' "$swap_uuid"
     } > /etc/fstab
