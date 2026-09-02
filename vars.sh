@@ -144,6 +144,21 @@
 # Habilitar cliente DHCP (dhcpcd) no boot? (yes|no)
 : "${ENABLE_DHCP:=yes}"
 
+# Instalar e habilitar o net-wireless/iwd (Wi-Fi)? (yes|no)
+#
+# Default "yes" e deliberado: um sistema sem cabo de rede e sem Wi-Fi nao tem
+# NENHUMA forma de rede — e sem rede nao da nem para emergir o que faltou.
+# Instalar o iwd custa poucos MB; descobrir depois do reboot que nao ha como
+# conectar custa outro boot pelo live USB.
+#
+# O kernel do projeto ja traz o stack (CFG80211/MAC80211/IWLWIFI=m) e os
+# requisitos de cripto que o iwd exige (ver kernel-fragment.config, bloco 5b).
+#
+# Uso apos o boot:
+#     rc-service iwd start
+#     iwctl station wlan0 connect NOME-DA-REDE
+: "${ENABLE_WIFI:=yes}"
+
 # grub-install --removable (instala em EFI/BOOT/BOOTX64.EFI — util em VM/firmware
 # teimoso que ignora entradas de NVRAM). (yes|no)
 : "${GRUB_REMOVABLE:=no}"

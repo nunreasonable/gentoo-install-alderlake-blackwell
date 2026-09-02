@@ -422,7 +422,7 @@ validate_vars() {
     [[ "$NVIDIA_MODE" == "auto" || "$NVIDIA_MODE" == "force" || "$NVIDIA_MODE" == "skip" ]] \
         || die "NVIDIA_MODE='$NVIDIA_MODE' invalido (auto|force|skip)"
     local var
-    for var in ENABLE_SSHD ENABLE_DHCP GRUB_REMOVABLE AUTO_CONFIRM UPDATE_WORLD ALLOW_INSTALLED_HOST \
+    for var in ENABLE_SSHD ENABLE_DHCP ENABLE_WIFI GRUB_REMOVABLE AUTO_CONFIRM UPDATE_WORLD ALLOW_INSTALLED_HOST \
                READ_NEWS SKIP_HW_PREFLIGHT HW_PREFLIGHT_STRICT; do
         [[ "${!var}" == "yes" || "${!var}" == "no" ]] \
             || die "$var='${!var}' invalido (yes|no)"

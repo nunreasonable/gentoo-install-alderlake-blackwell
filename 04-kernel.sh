@@ -292,6 +292,15 @@ verify_kconfig() {
         EXT4_FS             # qualquer um dos TRES pode ser root ($ROOT_FS), e
         XFS_FS              # sem initramfs o driver da raiz TEM de ser =y:
         BTRFS_FS            # modulo dentro da raiz nao montada nao existe
+        # iwd usa a API de cripto e o subsistema de chaves do KERNEL. Faltando
+        # um destes ele falha com erro obscuro, ja no sistema instalado — e sem
+        # rede para consertar. Melhor reprovar aqui, antes de compilar.
+        KEYS
+        ASYMMETRIC_KEY_TYPE
+        X509_CERTIFICATE_PARSER
+        PKCS7_MESSAGE_PARSER
+        CRYPTO_USER_API_HASH
+        CRYPTO_USER_API_SKCIPHER
         EFI_STUB
         EFI_PARTITION       # tabela GPT
         VFAT_FS             # ESP
@@ -332,6 +341,16 @@ verify_kconfig() {
     if ! grep -Eqx 'CONFIG_DRM_TTM_HELPER=(y|m)' "$config"; then
         missing+=("CONFIG_DRM_TTM_HELPER=y|m (ausente — DRM_QXL=m no fragmento deveria seleciona-lo; exigido pelo nvidia-drivers em kernel >=6.11)")
     fi
+
+    # Stack wireless: legitimamente =m (rede nao monta a raiz), entao tambem nao
+    # cabe no array required. Mas a AUSENCIA e critica no caso de uso real desta
+    # maquina — sem cabo de rede, um kernel sem iwlwifi e um sistema sem NENHUMA
+    # forma de rede, e sem rede nao da nem para emergir o que faltou.
+    local wsym
+    for wsym in CFG80211 MAC80211 IWLWIFI IWLMVM; do
+        grep -Eqx "CONFIG_$wsym=(y|m)" "$config" \
+            || missing+=("CONFIG_$wsym=y|m (ausente — sem ele o sistema instalado nao tem Wi-Fi; a maquina de referencia tem Intel AX210)")
+    done
     # Proibidos: nouveau conflita com o driver proprietario; MODULE_SIG_FORCE
     # recusaria carregar o modulo nvidia nao assinado.
     if grep -q '^CONFIG_DRM_NOUVEAU=' "$config"; then

@@ -367,6 +367,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 06-wifi — net-wireless/iwd
+# ---------------------------------------------------------------------------
+# Sem cabo de rede e sem Wi-Fi, o sistema instalado nao tem NENHUMA forma de
+# rede — e sem rede nao da nem para emergir o que faltou. O unico jeito de sair
+# seria bootar o live USB de novo.
+#
+# O kernel ja traz o stack (bloco 5b do fragmento) e os requisitos de cripto que
+# o iwd exige; o verify_kconfig da etapa 04 cobra os dois conjuntos ANTES de
+# compilar. Aqui so falta o userspace.
+
+probe_wifi() {
+    pkg_installed net-wireless/iwd
+}
+
+do_wifi() {
+    emerge --quiet net-wireless/iwd
+}
+
+if [[ "$ENABLE_WIFI" == "yes" ]]; then
+    run_step 06-wifi probe_wifi do_wifi
+else
+    log_info "ENABLE_WIFI=no — pulando instalacao do iwd"
+fi
+
+# ---------------------------------------------------------------------------
 # 06-fs-tools — Handbook: Installing system tools -> Filesystem tools
 # Ferramentas de userspace dos filesystems usados: sys-fs/dosfstools SEMPRE
 # (a ESP e vfat e o fstab do 03 lhe da passno 2 — sem fsck.vfat o fsck do
@@ -448,6 +473,9 @@ probe_services() {
     if [[ "$ENABLE_DHCP" == "yes" ]]; then
         svc_is_enabled dhcpcd || return 1
     fi
+    if [[ "$ENABLE_WIFI" == "yes" ]]; then
+        svc_is_enabled iwd || return 1
+    fi
     return 0
 }
 
@@ -465,6 +493,12 @@ do_services() {
         svc_enable dhcpcd
     else
         log_info "ENABLE_DHCP=no — dhcpcd nao sera habilitado no boot"
+    fi
+    if [[ "$ENABLE_WIFI" == "yes" ]]; then
+        svc_enable iwd
+        log_info "iwd habilitado. Apos o boot: 'iwctl station wlan0 connect NOME-DA-REDE'"
+    else
+        log_info "ENABLE_WIFI=no — iwd nao sera habilitado no boot"
     fi
 }
 
