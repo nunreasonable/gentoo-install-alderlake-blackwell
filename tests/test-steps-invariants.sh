@@ -256,4 +256,46 @@ else
     no "01-stage3 nao deriva o flavor do stage3 de INIT_SYSTEM"
 fi
 
+# --- a sentinela de resume nao pode virar entrada de boot -------------------
+# Regressao de 2026-09-02 (Ciclo 3): o grub-mkconfig imprimiu
+#   Found linux image: /boot/kernel-fragment.sha256-6.18.48-gentoo
+# e criou um menuentry tentando bootar um arquivo de texto de ~130 bytes. O
+# /etc/grub.d/10_linux itera sobre estes globs e gera uma entrada por match.
+printf '\n  -- sentinela do kernel vs globs do grub.d/10_linux --\n'
+
+sent_fn="$(extract_fn "$KERNEL_SH" kernel_sentinel)"
+if [[ -z "$sent_fn" ]]; then
+    no "04-kernel nao define kernel_sentinel"
+else
+    sent_path="$(bash -c 'eval "$1"; kernel_sentinel 6.18.48-gentoo' _ "$sent_fn")"
+    ok "kernel_sentinel resolve para $sent_path"
+    for g in '/boot/vmlinuz-*' '/boot/vmlinux-*' '/vmlinuz-*' '/vmlinux-*' '/boot/kernel-*'; do
+        # shellcheck disable=SC2053  # comparar COM glob e exatamente o ponto aqui
+        if [[ "$sent_path" == $g ]]; then
+            no "a sentinela casa com o glob $g do 10_linux" \
+               "o grub-mkconfig geraria um menuentry falso apontando para ela"
+        else
+            ok "sentinela nao casa com o glob $g"
+        fi
+    done
+fi
+
+# O nome antigo so pode sobreviver na migracao e na invalidacao, nunca na
+# gravacao. extract_fn (nao grep no arquivo) para nao casar com os comentarios
+# que explicam a regressao.
+build_fn="$(extract_fn "$KERNEL_SH" do_kernel_build)"
+if grep -qE '>[[:space:]]*"?/boot/kernel-fragment' <<< "$build_fn"; then
+    no "do_kernel_build ainda grava a sentinela com o nome antigo"
+else
+    ok "do_kernel_build grava a sentinela pelo nome novo"
+fi
+
+# E um grub.cfg ja contaminado tem de ser reprovado, para ser regerado.
+if grep -qF 'kernel-fragment.sha256' <<< "$(extract_fn "$REPO_DIR/05-bootloader.sh" probe_grub_cfg)"; then
+    ok "probe_grub_cfg reprova grub.cfg que referencia a sentinela antiga"
+else
+    no "probe_grub_cfg aceita grub.cfg contaminado" \
+       "quem instalou antes da correcao ficaria com a entrada falsa para sempre"
+fi
+
 finish

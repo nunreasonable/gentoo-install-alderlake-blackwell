@@ -16,7 +16,7 @@ leitura de codigo.
 | Ciclos completos em QEMU/OVMF | **2** (instalacao ponta a ponta + boot) |
 | Bugs encontrados por execucao | **9** (8 no codigo, 1 de ergonomia) |
 | Bugs encontrados por analise estatica | **0** dos 9 acima |
-| Suite de testes do host | 10 grupos, **450 asercoes**, exit 0 |
+| Suite de testes do host | 10 grupos, **458 asercoes**, exit 0 |
 | Validado em hardware fisico | **nada** |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
@@ -436,9 +436,46 @@ feature, e o portao reprova `0xb` (o valor real da VM) e aprova `0x3`.
 
 ---
 
+### 3.2 — a sentinela de resume virava uma entrada de boot falsa
+
+Achado durante a **reexecucao** do Ciclo 3, lendo a saida do `grub-mkconfig` na
+etapa `05`:
+
+```
+Found linux image: /boot/vmlinuz-6.18.48-gentoo
+Found linux image: /boot/kernel-fragment.sha256-6.18.48-gentoo
+```
+
+A segunda linha e a sentinela de resume do kernel — 130 bytes de texto com dois
+hashes, gravada por mim em `/boot` justamente para sobreviver ao `--reset`. O
+`/etc/grub.d/10_linux` itera sobre `/boot/vmlinuz-* /boot/vmlinux-* /vmlinuz-*
+/vmlinux-* /boot/kernel-*` e gera um menuentry por match, **sem olhar o
+conteudo**. O nome casava com o ultimo glob.
+
+Efeito: menu com uma entrada que nao boota. O sistema subia mesmo assim, porque
+`GRUB_DEFAULT=0` pega a primeira entrada e essa era o kernel real — mas a ordem
+vem de uma ordenacao por versao, nao de uma garantia.
+
+**Severidade:** media. Nao impediu o boot, e teria sido invisivel em qualquer
+teste automatizado que verificasse apenas "o grub.cfg menciona o kernel atual" —
+o probe do `05` fazia exatamente isso e passava.
+
+**Correcao:** sentinela renomeada para
+`/boot/gentoo-install.kernel-sha256-<kver>`, que nao casa com nenhum dos cinco
+globs. O `04` migra automaticamente o nome antigo que encontrar; o probe do
+`05-grub-cfg` reprova um `grub.cfg` que ainda cite o nome velho, entao um
+sistema ja instalado se corrige na proxima execucao sem recompilar o kernel.
+Seis asercoes novas comparam a sentinela contra os cinco globs reais do GRUB.
+
+> Segundo bug do Ciclo 3 com a mesma forma do primeiro: cuidei do que o
+> **kernel** precisa e esqueci do que o **GRUB** faz. Os dois foram achados
+> lendo a saida do instalador, nao por analise estatica.
+
+---
+
 ### Confianca operacional
 
 | | |
 |---|---|
-| Base | **Alta** — dois ciclos completos + boot, nove bugs corrigidos, 444 asercoes. Nao validada em bare metal nem com btrfs |
+| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 458 asercoes. Nao validada em bare metal nem com btrfs |
 | Desktop | **Baixa, inalterada** — nunca executado. Esta rodada melhorou consistencia e cobertura de teste; nao substitui execucao |

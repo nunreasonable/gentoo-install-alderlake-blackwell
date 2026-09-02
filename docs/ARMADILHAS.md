@@ -7,7 +7,8 @@ que fazer quando der errado.
 Le-se na ordem. As secoes 1–4 sao **antes de rodar o instalador**, as 5–7 sao
 **antes do primeiro reboot**, as 8–12 sao **no primeiro boot**, as 13–15 sao
 **recuperacao e limpeza** (retomar apos falha, hashes de senha que sobram,
-retomar com outra versao do instalador) e a 16 e especifica de **btrfs**.
+retomar com outra versao do instalador). A 16 e especifica de **btrfs** e a 17
+trata de arquivos em `/boot` que o GRUB confunde com kernels.
 
 > **Regra de ouro deste projeto:** nada aqui foi executado em hardware real.
 > Mantenha SEMPRE um live USB gravado e testado ao alcance, e **nao apague a
@@ -657,7 +658,7 @@ markers carregam valor: flavor do stage3, hash do fragmento, versao do nvidia.
 ### Artefatos que **nao** devem ser apagados a mao
 
 ```
-/boot/kernel-fragment.sha256-<kver>
+/boot/gentoo-install.kernel-sha256-<kver>
 ```
 
 E ele que permite ao probe reconhecer um kernel ja correto **sem marker**. Apagar
@@ -849,3 +850,51 @@ filesystem — que e exatamente este caso.
 
 Se o `prefix` estiver errado ou vazio, o problema e outro: o `grub-install` nao
 detectou o local do `/boot`, e a causa esta antes.
+
+---
+
+## 17. Entrada de boot falsa: arquivos em `/boot` que casam com `kernel-*`
+
+O `/etc/grub.d/10_linux` nao "detecta kernels": ele itera sobre cinco globs e
+cria um menuentry para **cada arquivo** que casar.
+
+```sh
+for i in /boot/vmlinuz-* /boot/vmlinux-* /vmlinuz-* /vmlinux-* /boot/kernel-* ; do
+```
+
+Nao ha checagem de conteudo. Qualquer arquivo com um desses nomes vira uma
+entrada de menu, mesmo que seja texto puro.
+
+**O caso real (2026-09-02, Ciclo 3).** A sentinela de resume do kernel chamava
+`/boot/kernel-fragment.sha256-<kver>` — 130 bytes de texto com dois hashes. Ela
+casava com `/boot/kernel-*`, e o `grub-mkconfig` reportou:
+
+```
+Found linux image: /boot/vmlinuz-6.18.48-gentoo
+Found linux image: /boot/kernel-fragment.sha256-6.18.48-gentoo   <-- a sentinela
+```
+
+O sistema **bootava**: o `GRUB_DEFAULT=0` seleciona a primeira entrada, que era
+o kernel de verdade. A entrada falsa so falharia se alguem a escolhesse a mao —
+mas a ordem vem de uma ordenacao por versao, nao de uma garantia, e um menu com
+uma entrada que nao boota e uma armadilha esperando o operador cansado.
+
+**A correcao.** A sentinela passou a se chamar
+`/boot/gentoo-install.kernel-sha256-<kver>`, que nao casa com nenhum dos cinco
+globs. O `04` renomeia automaticamente a sentinela antiga que encontrar, e o
+probe do `05-grub-cfg` reprova um `grub.cfg` que ainda referencie o nome velho —
+entao um sistema instalado antes da correcao se conserta sozinho na proxima
+execucao, sem recompilar o kernel.
+
+**A licao geral.** `/boot` nao e um diretorio comum: e um namespace que outros
+programas varrem por padrao de nome. Antes de colocar qualquer arquivo auxiliar
+ali, confira contra os globs acima. Um nome que comece com `gentoo-install.` e
+seguro; um que comece com `kernel-` nao e.
+
+Para conferir a qualquer momento, sem rebootar:
+
+```sh
+grep -n 'linux[[:space:]]*/boot/' /boot/grub/grub.cfg
+```
+
+Toda linha listada tem de apontar para um `vmlinuz-*` de verdade.

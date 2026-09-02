@@ -290,6 +290,12 @@ probe_grub_cfg() {
     # fechado. Se o binario nao existir, reportamos nao-feito (fail-closed).
     command -v grub-script-check > /dev/null 2>&1 || return 1
     grub-script-check /boot/grub/grub.cfg > /dev/null 2>&1 || return 1
+    # Nenhuma entrada apontando para a sentinela de resume do kernel. O nome
+    # antigo dela casava com o glob /boot/kernel-* do grub.d/10_linux, que
+    # gerava um menuentry tentando bootar um arquivo de texto de ~130 bytes. O
+    # 04 renomeia a sentinela; reprovar aqui faz o grub.cfg ja contaminado ser
+    # regerado, sem o operador precisar lembrar disso.
+    ! grep -qF 'kernel-fragment.sha256' /boot/grub/grub.cfg || return 1
     # Exatamente UM root= na linha do menuentry default (ver comentario do
     # probe_default_grub): duas ocorrencias significam que alguem reintroduziu
     # root= no GRUB_CMDLINE_LINUX e o 10_linux acrescentou o dele.

@@ -369,6 +369,41 @@ verify_kconfig() {
     log_info "verify_kconfig: todas as assercoes obrigatorias presentes no .config"
 }
 
+# Caminho da sentinela de resume do kernel.
+#
+# O nome NAO pode comecar com `vmlinuz-`, `vmlinux-` nem `kernel-`. O
+# /etc/grub.d/10_linux itera exatamente sobre
+#
+#     /boot/vmlinuz-* /boot/vmlinux-* /vmlinuz-* /vmlinux-* /boot/kernel-*
+#
+# e gera um menuentry para CADA match. O nome original desta sentinela
+# (`kernel-fragment.sha256-<kver>`) casava com `/boot/kernel-*`, e o
+# grub-mkconfig produzia uma entrada de boot que apontava para este arquivo de
+# texto de ~130 bytes como se fosse um kernel. Observado na VM em 2026-09-02:
+#   Found linux image: /boot/kernel-fragment.sha256-6.18.48-gentoo
+kernel_sentinel() {
+    printf '/boot/gentoo-install.kernel-sha256-%s\n' "$1"
+}
+
+kernel_sentinel_legacy() {
+    printf '/boot/kernel-fragment.sha256-%s\n' "$1"
+}
+
+# Migra sentinelas do nome antigo para o novo. Roda em toda invocacao do 04
+# (barata e idempotente) porque um sistema instalado antes desta correcao so e
+# limpo se alguem passar por aqui — e o probe nem chega a ser consultado quando
+# o marker ja validou a etapa.
+migrate_kernel_sentinel() {
+    local old new
+    for old in /boot/kernel-fragment.sha256-*; do
+        [[ -f "$old" ]] || continue
+        new="$(kernel_sentinel "${old##*/kernel-fragment.sha256-}")"
+        # Se a nova ja existe ela e a autoritativa: a antiga so precisa sumir.
+        if [[ -e "$new" ]]; then rm -f "$old"; else mv -f "$old" "$new"; fi
+        log_warn "sentinela renomeada: ${old##*/} -> ${new##*/}. O nome antigo casava com o glob /boot/kernel-* do grub.d/10_linux e virava uma entrada de boot falsa no menu; o 05 regenera o grub.cfg."
+    done
+}
+
 probe_kernel_build() {
     local kver frag
     kver="$(kernel_release)" || return 1
@@ -379,7 +414,7 @@ probe_kernel_build() {
     # hash do fragmento: editar o fragmento muda o hash, invalida e forca o
     # rebuild. Duas fontes aceitas para o hash do BUILD:
     #   1. o marker (valor gravado por mark_done, nao "done" generico);
-    #   2. /boot/kernel-fragment.sha256-<kver>, gravado por do_kernel_build
+    #   2. a sentinela em /boot (ver kernel_sentinel), gravada por do_kernel_build
     #      junto do vmlinuz — sobrevive ao --reset (que apaga so o state dir),
     #      entao um kernel integro e atual NAO e recompilado por horas so
     #      porque os markers sumiram (probe funcional e a autoridade).
@@ -394,9 +429,10 @@ probe_kernel_build() {
     # So o hash do fragmento nao amarrava a sentinela ao kernel: um build
     # posterior que falhasse no meio deixava a sentinela antiga validando um
     # vmlinuz que ja nao correspondia a ela.
-    local sent_frag sent_vm vmlinuz
-    if [[ -r "/boot/kernel-fragment.sha256-${kver}" ]]; then
-        read -r sent_frag sent_vm < "/boot/kernel-fragment.sha256-${kver}" || true
+    local sent_frag sent_vm vmlinuz sentinel
+    sentinel="$(kernel_sentinel "$kver")"
+    if [[ -r "$sentinel" ]]; then
+        read -r sent_frag sent_vm < "$sentinel" || true
         if [[ "$sent_frag" == "$frag" && -n "$sent_vm" ]]; then
             vmlinuz="/boot/vmlinuz-${kver}"
             if [[ -f "$vmlinuz" ]] \
@@ -420,7 +456,7 @@ do_kernel_build() {
     # nao corresponde a ela — o proximo probe falha e o build recomeca.
     local kver_old
     if kver_old="$(kernel_release)"; then
-        rm -f "/boot/kernel-fragment.sha256-${kver_old}"
+        rm -f "$(kernel_sentinel "$kver_old")" "$(kernel_sentinel_legacy "$kver_old")"
     fi
 
     # Subshell: o cd nao vaza para o resto do script; qualquer falha dentro
@@ -483,7 +519,7 @@ do_kernel_build() {
     done
 
     vm_hash="$(sha256sum "/boot/vmlinuz-${kver}" | awk '{print $1}')"
-    printf '%s %s\n' "$frag_hash" "$vm_hash" > "/boot/kernel-fragment.sha256-${kver}"
+    printf '%s %s\n' "$frag_hash" "$vm_hash" > "$(kernel_sentinel "$kver")"
 
     # Marker com valor: o hash do fragmento usado neste build.
     mark_done 04-kernel-build "$frag_hash"
@@ -682,6 +718,8 @@ EOF
 # ---------------------------------------------------------------------------
 # Execucao
 # ---------------------------------------------------------------------------
+
+migrate_kernel_sentinel
 
 run_step 04-sources      probe_sources      do_sources
 run_step 04-kernel-build probe_kernel_build do_kernel_build

@@ -31,7 +31,7 @@ Esta secao e a informacao mais importante do repositorio. Ela e literal.
 | `bash -n` (sintaxe) em todos os scripts | **Passou** |
 | ShellCheck (container, repo montado read-only) | **Passou** |
 | Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
-| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 450 asercoes em 10 grupos |
+| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 458 asercoes em 10 grupos |
 
 ### Execucao em QEMU/OVMF — **dois ciclos completos, com boot** (2026-09-01)
 
@@ -448,7 +448,7 @@ Consequencias praticas:
   (`sgdisk -i`, `blkid`, mounts). Por isso `--reset` e barato: apaga so os
   markers.
 - **Artefato funcional que sobrevive ao `--reset`:** o hash do fragmento e do
-  vmlinuz em `/boot/kernel-fragment.sha256-<kver>` (dois campos). **Nao apague
+  vmlinuz em `/boot/gentoo-install.kernel-sha256-<kver>` (dois campos). **Nao apague
   esse arquivo a mao** — sem ele, `--reset` forca horas de recompilacao.
 - **Invalidacao automatica:** editar `kernel-fragment.config` muda o hash e
   forca rebuild; rebuild invalida nvidia e grub.cfg; reparticionar invalida o
