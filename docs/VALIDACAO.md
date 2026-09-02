@@ -13,10 +13,10 @@ leitura de codigo.
 
 | | |
 |---|---|
-| Ciclos completos em QEMU/OVMF | **2** (instalacao ponta a ponta + boot) |
-| Bugs encontrados por execucao | **9** (8 no codigo, 1 de ergonomia) |
-| Bugs encontrados por analise estatica | **0** dos 9 acima |
-| Suite de testes do host | 10 grupos, **466 asercoes**, exit 0 |
+| Ciclos completos em QEMU/OVMF | **3** (instalacao ponta a ponta + boot) — 2 em ext4, 1 em btrfs |
+| Bugs encontrados por execucao | **12** (11 no codigo, 1 de ergonomia) |
+| Bugs encontrados por analise estatica | **0** dos 12 acima |
+| Suite de testes do host | 10 grupos, **477 asercoes**, exit 0 |
 | Validado em hardware fisico | **nada** |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
@@ -276,6 +276,7 @@ codigo atual e sem intervencao, **ainda nao foi feita**.
 | NVMe fisico, rede e audio da B760M-E | Dispositivos virtio na VM |
 | Suspend/resume | Nunca executado |
 | Instalacao limpa com o codigo atual, sem intervencao | Nunca executada |
+| Etapa `06-sudo` | Escrita em 2026-09-02, depois do Ciclo 3 — **nunca executada** |
 | Branch `INIT_SYSTEM=systemd` | Nunca executado |
 
 ---
@@ -372,7 +373,7 @@ reportados como auditados porque nao foram.
 
 ---
 
-## Ciclo 3 — btrfs (2026-09-02): instalacao completa, **boot falhou**
+## Ciclo 3 — btrfs (2026-09-02): **fechado com boot**, apos tres correcoes
 
 **Ambiente:** o mesmo QEMU/OVMF, `ROOT_FS=btrfs`, sobre o disco do Ciclo 2.
 
@@ -523,11 +524,42 @@ foi verificada rodando o instalador.
 > Achado por **operacao**, nao por execucao do codigo de teste: a instrucao que
 > eu mesmo dei ao operador omitia a variavel.
 
+### 3.4 — Boot confirmado
+
+Reexecucao com `ROOT_FS=btrfs`, sem `--repartition` (a raiz ja estava correta):
+as etapas `00`–`03` passaram por probe, o `04` renomeou a sentinela **sem
+recompilar** e o `05` regenerou o `grub.cfg`. Conferencia antes do reboot:
+
+```sh
+grep -n 'linux[[:space:]]*/boot/' /mnt/gentoo/boot/grub/grub.cfg
+115:    linux /boot/vmlinuz-6.18.48-gentoo root=PARTUUID=383490be-... ro intel_iommu=on
+127:      linux /boot/vmlinuz-6.18.48-gentoo root=PARTUUID=383490be-... ro intel_iommu=on
+138:      linux /boot/vmlinuz-6.18.48-gentoo root=PARTUUID=383490be-... ro single intel_iommu=on
+```
+
+Tres entradas (principal, avancada, recovery), todas apontando para o kernel
+real; nenhuma linha `initrd`, coerente com o design sem initramfs.
+
+**Boot:** `This is gentoo (Linux x86_64 6.18.48-gentoo)`, login como usuario
+normal, runlevel 3 completo — `syslogd`, `cronie`, `dbus`, `iwd`, `dhcpcd`,
+`sshd`. Raiz btrfs montada e remontada read-write pelo OpenRC.
+
+Com isso o `ROOT_FS=btrfs` sai da lista de "sem validacao": ele tem **um** ciclo
+completo com boot. O ext4 continua com dois.
+
+**Pendencias observadas neste boot, nao investigadas:**
+
+| Sintoma | Estado |
+|---|---|
+| `ERROR: user.<usuario> failed to start` no login | **Aberto** — servico de sessao do OpenRC; nao e criado por este instalador |
+| `sysctl: net.core.default_qdisc ... Arquivo ou diretorio inexistente` | Cosmetico — a opcao de kernel correspondente nao esta no fragmento |
+| `sudo: comando nao encontrado` | **Corrigido** na mesma sessao (etapa `06-sudo`), ainda **nao executado** |
+
 ---
 
 ### Confianca operacional
 
 | | |
 |---|---|
-| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 466 asercoes. Nao validada em bare metal nem com btrfs |
+| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 477 asercoes. Nao validada em bare metal nem com btrfs |
 | Desktop | **Baixa, inalterada** — nunca executado. Esta rodada melhorou consistencia e cobertura de teste; nao substitui execucao |

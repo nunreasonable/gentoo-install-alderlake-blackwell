@@ -298,4 +298,85 @@ else
        "quem instalou antes da correcao ficaria com a entrada falsa para sempre"
 fi
 
+# --- 06-sudo ----------------------------------------------------------------
+# Pedido do operador (2026-09-02) apos o primeiro boot: `sudo: comando nao
+# encontrado`. Um sudoers invalido faz o sudo recusar TUDO, inclusive o visudo
+# que consertaria — por isso as asercoes abaixo cobrem ORDEM e MODO, nao so
+# presenca.
+printf '\n  -- 06-sudo --\n'
+
+if grep -qE '^run_step 06-sudo ' "$USERS_SH"; then
+    ok "06-sudo esta registrado como sub-etapa"
+else
+    no "nao existe run_step 06-sudo"
+fi
+
+# Ordem: o sudo depende do usuario existir para o aviso sobre wheel fazer sentido.
+ln_users="$(grep -n '^run_step 06-users ' "$USERS_SH" | cut -d: -f1)"
+ln_sudo="$(grep -n '^run_step 06-sudo ' "$USERS_SH" | cut -d: -f1)"
+if [[ -n "$ln_users" && -n "$ln_sudo" ]] && (( ln_sudo > ln_users )); then
+    ok "06-sudo roda depois de 06-users"
+else
+    no "06-sudo nao roda depois de 06-users (users=$ln_users sudo=$ln_sudo)"
+fi
+
+sudo_fn="$(extract_fn "$USERS_SH" do_sudo)"
+if [[ -z "$sudo_fn" ]]; then
+    no "do_sudo nao existe"
+else
+    # visudo -c ANTES do install: verificar depois de publicar seria tarde.
+    ln_check="$(grep -n 'visudo -cqf' <<< "$sudo_fn" | tail -1 | cut -d: -f1)"
+    ln_pub="$(grep -n 'install -m' <<< "$sudo_fn" | head -1 | cut -d: -f1)"
+    if [[ -n "$ln_check" && -n "$ln_pub" ]] && (( ln_check < ln_pub )); then
+        ok "do_sudo valida com visudo -c ANTES de publicar"
+    else
+        no "do_sudo publica sem validar antes (check=$ln_check publish=$ln_pub)"
+    fi
+
+    # 0440: o sudo recusa ler sudoers com permissao mais frouxa.
+    if grep -qE 'install -m 0440 -o root -g root' <<< "$sudo_fn"; then
+        ok "o drop-in e publicado com 0440 root:root"
+    else
+        no "o drop-in nao e publicado com 0440 root:root" "o sudo recusaria le-lo"
+    fi
+
+    # ENABLE_SUDO=no e omissao, nunca remocao.
+    if grep -qE 'emerge.*(-C|--unmerge|--depclean)|rm -f /etc/sudoers' <<< "$sudo_fn"; then
+        no "do_sudo remove algo — ENABLE_SUDO=no deve ser omissao, nao remocao"
+    else
+        ok "ENABLE_SUDO=no nao desinstala nem apaga nada"
+    fi
+
+    # Nome do drop-in: o sudo IGNORA arquivos com ponto ou til em sudoers.d.
+    dropin="$(grep -oE '/etc/sudoers\.d/[A-Za-z0-9_-]+' <<< "$sudo_fn" | head -1)"
+    base="${dropin##*/}"
+    if [[ -n "$base" && "$base" != *.* && "$base" != *"~"* ]]; then
+        ok "nome do drop-in ('$base') nao tem ponto nem til — o sudo o le"
+    else
+        no "nome do drop-in ('$base') seria ignorado pelo sudo"
+    fi
+fi
+
+# O regex do includedir tem de casar as duas formas validas e recusar comentario.
+inc_fn="$(extract_fn "$USERS_SH" _sudoers_includes_dir)"
+if [[ -z "$inc_fn" ]]; then
+    no "_sudoers_includes_dir nao existe"
+else
+    STMP="$(mktemp -d)"
+    check_inc() {
+        printf '%s\n' "$2" > "$STMP/sudoers"
+        if bash -c 'eval "$1"; _sudoers_includes_dir "$2"' _ "$inc_fn" "$STMP/sudoers"; then
+            printf 'MATCH'
+        else
+            printf 'NOMATCH'
+        fi
+    }
+    assert_eq MATCH   "$(check_inc x '@includedir /etc/sudoers.d')"  "aceita '@includedir' (forma moderna do Gentoo)"
+    assert_eq MATCH   "$(check_inc x '#includedir /etc/sudoers.d')"  "aceita '#includedir' (forma legada — nao e comentario no sudo)"
+    assert_eq NOMATCH "$(check_inc x '# includedir /etc/sudoers.d')" "recusa '# includedir' com espaco (isso e comentario de verdade)"
+    assert_eq NOMATCH "$(check_inc x '@includedir /etc/sudoers.d.bak')" "recusa diretorio diferente"
+    assert_eq NOMATCH "$(check_inc x 'Defaults env_reset')"          "recusa sudoers sem includedir"
+    rm -rf "$STMP"
+fi
+
 finish

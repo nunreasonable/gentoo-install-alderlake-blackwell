@@ -124,9 +124,14 @@
 # ---------------------------------------------------------------------------
 
 # Usuario nao-root a criar. TROQUE pelo seu nome de usuario antes de instalar.
-: "${USERNAME:=gentoo}"
+: "${USERNAME:=daeese}"
 
 # Grupos suplementares do usuario (separados por virgula).
+#
+# 'wheel' e o que da acesso ao sudo (ver ENABLE_SUDO). Retirar 'wheel' daqui sem
+# tambem por ENABLE_SUDO=no produz um sistema com sudo instalado e o usuario
+# fora dele; o instalador avisa em vez de adivinhar qual das duas coisas voce
+# quis.
 : "${USER_GROUPS:=wheel,audio,video,usb,portage}"
 
 # Hashes de senha pre-computados (formato crypt, ex.: saida de `openssl passwd -6`).
@@ -143,6 +148,22 @@
 
 # Habilitar cliente DHCP (dhcpcd) no boot? (yes|no)
 : "${ENABLE_DHCP:=yes}"
+
+# Instalar o app-admin/sudo e liberar o grupo 'wheel'? (yes|no)
+#
+# Sem sudo, a unica forma de administrar e `su -` com a senha de root. Da para
+# viver assim, mas quase toda documentacao de Gentoo (e o modulo desktop/)
+# assume sudo disponivel.
+#
+# A regra instalada e a minima util, num drop-in proprio:
+#
+#     /etc/sudoers.d/10-wheel:  %wheel ALL=(ALL:ALL) ALL
+#
+# Ela pede senha (nao ha NOPASSWD) e nao toca no /etc/sudoers, que continua
+# como o pacote entregou. O arquivo e validado com `visudo -c` ANTES de ser
+# publicado: um sudoers invalido faz o sudo recusar TUDO, inclusive o proprio
+# visudo que consertaria.
+: "${ENABLE_SUDO:=yes}"
 
 # Instalar e habilitar o net-wireless/iwd (Wi-Fi)? (yes|no)
 #

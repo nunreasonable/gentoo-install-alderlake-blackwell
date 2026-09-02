@@ -3,7 +3,7 @@
 Escrito para ser lido **do telefone**, quando a máquina de trabalho não existir
 mais. Diz onde as coisas pararam, o que fazer a seguir e como sair do buraco.
 
-Última atualização: 2026-09-02 — após o Ciclo 3 (btrfs instalou, não bootou).
+Última atualização: 2026-09-02 — após o Ciclo 3 fechar: **btrfs bootou**.
 
 ---
 
@@ -11,49 +11,35 @@ mais. Diz onde as coisas pararam, o que fazer a seguir e como sair do buraco.
 
 | | |
 |---|---|
-| Instalador `00`–`06` (ext4) | **Duas instalações completas em QEMU + boot** (OpenRC) |
-| `ROOT_FS=btrfs` | **Instalou, não bootou** — `block-group-tree`. Corrigido; **aguardando reexecução** |
+| Instalador `00`–`06` | **Três instalações completas em QEMU + boot** (OpenRC): duas ext4, uma btrfs |
+| `ROOT_FS=btrfs` | **Instalou e bootou** (2026-09-02, após corrigir `block-group-tree`) |
 | Módulo `desktop/` (niri) | Escrito, **nunca executado** |
 | Bare metal | **Nunca** |
 | WiFi (`iwd`) no sistema instalado | Implementado, **nunca executado** |
 
-Suíte do host: `./tests/run-tests.sh` → 466 asserções. Testes estáticos não
+Suíte do host: `./tests/run-tests.sh` → 477 asserções. Testes estáticos não
 provam boot.
 
 ---
 
 ## O plano
 
-**1. btrfs na VM — REEXECUCAO** (o disco atual tem a raiz quebrada)
+**1. Bare metal.** A VM já não tem mais nada a provar: três instalações
+completas, três boots, ext4 e btrfs. O que falta só existe no hardware real —
+NVIDIA Blackwell carregando de verdade, WiFi AX210, firmware da placa.
 
 ```sh
 cd ~/gentoo-install-alderlake-blackwell && git pull
-ROOT_FS=btrfs ./tests/run-in-qemu-guest.sh --reset --repartition
+# confira o disco ANTES (nomes de kernel mudam entre boots):
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
+sudo ROOT_FS=btrfs ./install.sh
 ```
 
-O `--reset --repartition` e necessario: a raiz atual foi criada **com**
-`block-group-tree`, e o portao novo do `05` vai reprova-la — corretamente. Ela
-precisa ser recriada pelo `00`, que agora passa `-O ^block-group-tree`.
+`ROOT_FS` **não fica gravado**: repita a variável em toda execução, inclusive
+nas retomadas. O `TARGET_DISK` do `vars.sh` está em `/dev/nvme0n1` (o disco de
+dados, 465.8G, vazio) — confirme que ainda é esse o nome antes do `ERASE`.
 
-O `ROOT_FS` do ambiente atravessa: o perfil da VM nao o define. O sinal de que
-pegou e o prompt pedindo `REFORMAT /dev/vda3` — que **nao** e pulado por
-`AUTO_CONFIRM=yes`, de proposito.
-
-**O que observar**, na ordem em que aparece:
-
-| Momento | O que confirma |
-|---|---|
-| `00` | `mkfs.btrfs -f -O ^block-group-tree` na linha de comando do log |
-| `04` | `verify_kconfig` aprovando, com `BTRFS_FS` no array required |
-| `05` | a linha `raiz btrfs sem block-group-tree — legivel pelo GRUB` |
-| boot | nao cair em `grub rescue` |
-
-Se cair em `grub rescue` de novo: `set` e `ls (hd0,gpt3)/` no proprio prompt.
-Foi o que resolveu da ultima vez — cada saida elimina uma hipotese.
-
-**2. Bare metal** — só depois que a VM fechar com boot.
-
-**3. `desktop/`** — só depois do bare metal bootar. Ele instala um compositor
+**2. `desktop/`** — só depois do bare metal bootar. Ele instala um compositor
 Wayland com NVIDIA proprietário, que é o pedaço que nenhuma VM valida.
 
 ---
@@ -132,7 +118,8 @@ Não precisa do live USB.
 minuto, tente `Ctrl+Alt+F2`, veja se o SSH sobe. Procedimento completo e
 ordenado em [ARMADILHAS.md](ARMADILHAS.md), seção 8.
 
-**Contas criadas:** `root` e o `USERNAME` do `vars.sh` (default `gentoo`).
+**Contas criadas:** `root` e o `USERNAME` do `vars.sh` (default `daeese`), que
+nasce no grupo `wheel` e portanto com `sudo` (senha propria, sem NOPASSWD).
 
 ---
 
@@ -141,7 +128,6 @@ ordenado em [ARMADILHAS.md](ARMADILHAS.md), seção 8.
 - Bare metal, em qualquer forma
 - Runtime do NVIDIA na Blackwell — o QEMU validou o **build**, não a carga do
   módulo, o firmware GSP nem o modeset
-- btrfs, em qualquer forma
 - O módulo `desktop/` inteiro
 - Segunda instalação limpa com o código atual, sem intervenção
 - Branch `INIT_SYSTEM=systemd`

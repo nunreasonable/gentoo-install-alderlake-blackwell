@@ -31,11 +31,13 @@ Esta secao e a informacao mais importante do repositorio. Ela e literal.
 | `bash -n` (sintaxe) em todos os scripts | **Passou** |
 | ShellCheck (container, repo montado read-only) | **Passou** |
 | Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
-| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 466 asercoes em 10 grupos |
+| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 477 asercoes em 10 grupos |
 
-### Execucao em QEMU/OVMF — **dois ciclos completos, com boot** (2026-09-01)
+### Execucao em QEMU/OVMF — **tres ciclos completos, com boot** (2026-09-01/02)
 
-Duas instalacoes inteiras executadas, ambas com o sistema resultante **bootando**.
+Tres instalacoes inteiras executadas, todas com o sistema resultante **bootando**.
+Os dois primeiros ciclos usaram `ROOT_FS=ext4`; o terceiro, **`ROOT_FS=btrfs`**
+(bootou na segunda tentativa, apos a correcao de `block-group-tree`).
 VM: OVMF/UEFI, 6 vCPUs, disco **virtio** (`/dev/vda`), `NVIDIA_MODE=force`, OpenRC.
 
 - **Ciclo 1** — disco em branco. Encontrou 5 problemas.
@@ -303,6 +305,17 @@ Nenhum match exato de modelo (placa, GPU, VRAM) e obrigatorio.
 |---|---|---|
 | `SKIP_HW_PREFLIGHT` | `no` | Pula o preflight **inteiro**, inclusive os gates fatais. Escape hatch de risco assumido |
 | `HW_PREFLIGHT_STRICT` | `no` | Promove **todo** aviso a falha (modo CI/producao) |
+
+Duas que mudam o sistema resultante e costumam ser esquecidas:
+
+| Var | Default | Efeito |
+|---|---|---|
+| `USERNAME` | `daeese` | Usuario nao-root criado. Nasce em `USER_GROUPS` (`wheel,audio,video,usb,portage`) |
+| `ENABLE_SUDO` | `yes` | Instala `app-admin/sudo` e publica `/etc/sudoers.d/10-wheel` (`%wheel ALL=(ALL:ALL) ALL`, **com senha**). `no` e omissao: nada e instalado e nada existente e removido |
+
+O `ROOT_FS` **nao fica gravado** no sistema instalado. Se voce instalou com
+`ROOT_FS=btrfs`, repita a variavel em toda retomada — sem ela o `vars.sh` cai no
+default `ext4` e o `00` reclama (corretamente) que a raiz nao bate.
 
 ---
 

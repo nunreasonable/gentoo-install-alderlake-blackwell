@@ -347,6 +347,74 @@ do_user_password() {
 run_step 06-user-password probe_user_password do_user_password
 
 # ---------------------------------------------------------------------------
+# 06-sudo — o Handbook nao cobre sudo; o Gentoo Wiki (Sudo) sim. Roda DEPOIS de
+# 06-users para que o aviso sobre 'wheel' saia com o usuario ja criado.
+# ---------------------------------------------------------------------------
+
+# O drop-in em /etc/sudoers.d so e lido se o /etc/sudoers incluir o diretorio.
+# O sudo do Gentoo ja vem com a linha, mas se um dia nao vier o arquivo seria
+# ignorado EM SILENCIO, e o operador descobriria com "user is not in the sudoers
+# file" no primeiro uso — depois do reboot, quando consertar custa caro.
+#
+# Aceita as duas formas validas do diretivo (`@includedir` moderno e
+# `#includedir` legado — no sudo o '#' aqui NAO e comentario). Um `# includedir`
+# com espaco e comentario de verdade e nao pode passar.
+#
+# Argumento opcional so para teste; em producao le sempre /etc/sudoers.
+_sudoers_includes_dir() {
+    grep -qE '^[[:space:]]*[@#]includedir[[:space:]]+/etc/sudoers\.d[[:space:]]*$' "${1:-/etc/sudoers}"
+}
+
+probe_sudo() {
+    [[ "$ENABLE_SUDO" == "yes" ]] || return 0
+    pkg_installed app-admin/sudo || return 1
+    [[ -f /etc/sudoers.d/10-wheel ]] || return 1
+    _sudoers_includes_dir || return 1
+    # Regra integra: um arquivo truncado passaria nas checagens acima.
+    command -v visudo > /dev/null 2>&1 || return 1
+    visudo -cqf /etc/sudoers.d/10-wheel > /dev/null 2>&1 || return 1
+}
+
+do_sudo() {
+    if [[ "$ENABLE_SUDO" != "yes" ]]; then
+        # ENABLE_SUDO=no e OMISSAO, nunca remocao (mesma semantica de
+        # NVIDIA_MODE=skip): nada e instalado e nada existente e desfeito.
+        log_info "ENABLE_SUDO=no — sudo nao instalado (nada existente e removido)"
+        return 0
+    fi
+
+    emerge --noreplace app-admin/sudo
+
+    _sudoers_includes_dir \
+        || die "/etc/sudoers nao inclui /etc/sudoers.d — o drop-in seria ignorado em silencio. Rode 'visudo' e acrescente '@includedir /etc/sudoers.d' na ultima linha, depois re-execute."
+
+    # Nome sem ponto e sem til: o sudo IGNORA arquivos assim em sudoers.d.
+    local tmp
+    tmp="$(mktemp)" || die "nao foi possivel criar temporario para a regra de sudo"
+    printf '%%wheel ALL=(ALL:ALL) ALL\n' > "$tmp"
+
+    # visudo -c ANTES de publicar — mesmo invariante do grub.cfg no 05. Um
+    # sudoers invalido faz o sudo recusar TUDO, inclusive o proprio visudo que
+    # consertaria; verificar depois de publicar seria tarde demais.
+    visudo -cqf "$tmp" \
+        || { rm -f "$tmp"; die "a regra de sudo gerada nao passou no visudo -c — nada foi publicado em /etc/sudoers.d"; }
+
+    # 0440 root:root: o sudo RECUSA ler sudoers com permissao mais frouxa.
+    install -m 0440 -o root -g root "$tmp" /etc/sudoers.d/10-wheel \
+        || { rm -f "$tmp"; die "falha ao publicar /etc/sudoers.d/10-wheel"; }
+    rm -f "$tmp"
+
+    log_info "sudo instalado; /etc/sudoers.d/10-wheel libera o grupo 'wheel' (com senha)"
+
+    # O usuario so ganha sudo se estiver no wheel. Aviso, nao erro: quem tirou o
+    # wheel de proposito pode ter outro plano (regra por usuario, doas).
+    grep -qwx wheel <<< "${USER_GROUPS//,/$'\n'}" \
+        || log_warn "'wheel' nao esta em USER_GROUPS ('$USER_GROUPS') — o sudo foi instalado mas '$USERNAME' NAO tera acesso a ele. Acrescente wheel a USER_GROUPS, ou use ENABLE_SUDO=no."
+}
+
+run_step 06-sudo probe_sudo do_sudo
+
+# ---------------------------------------------------------------------------
 # 06-dhcpcd — Handbook: Configuring the network -> Automatic (DHCP)
 # Instala net-misc/dhcpcd somente quando ENABLE_DHCP=yes (o enable no boot
 # acontece em 06-services).
