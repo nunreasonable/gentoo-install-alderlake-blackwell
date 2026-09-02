@@ -388,6 +388,15 @@ do_sudo() {
     _sudoers_includes_dir \
         || die "/etc/sudoers nao inclui /etc/sudoers.d — o drop-in seria ignorado em silencio. Rode 'visudo' e acrescente '@includedir /etc/sudoers.d' na ultima linha, depois re-execute."
 
+    # O emerge do sudo NAO cria /etc/sudoers.d. O `@includedir` no /etc/sudoers
+    # pode apontar para um diretorio inexistente — para o sudo isso nao e erro,
+    # ele apenas ignora. Falhou no bare metal em 2026-09-02:
+    #   install: cannot create regular file '/etc/sudoers.d/10-wheel':
+    #   No such file or directory
+    # 0750 root:root e o modo do proprio upstream do sudo.
+    install -d -m 0750 -o root -g root /etc/sudoers.d \
+        || die "nao foi possivel criar /etc/sudoers.d"
+
     # Nome sem ponto e sem til: o sudo IGNORA arquivos assim em sudoers.d.
     local tmp
     tmp="$(mktemp)" || die "nao foi possivel criar temporario para a regra de sudo"

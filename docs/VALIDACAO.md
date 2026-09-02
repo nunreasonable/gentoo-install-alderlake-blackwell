@@ -14,9 +14,10 @@ leitura de codigo.
 | | |
 |---|---|
 | Ciclos completos em QEMU/OVMF | **3** (instalacao ponta a ponta + boot) — 2 em ext4, 1 em btrfs |
-| Bugs encontrados por execucao | **12** (11 no codigo, 1 de ergonomia) |
-| Bugs encontrados por analise estatica | **0** dos 12 acima |
-| Suite de testes do host | 10 grupos, **477 asercoes**, exit 0 |
+| Instalacoes em **bare metal** | **1 em andamento** (2026-09-02) |
+| Bugs encontrados por execucao | **13** (12 no codigo, 1 de ergonomia) |
+| Bugs encontrados por analise estatica | **0** dos 13 acima |
+| Suite de testes do host | 10 grupos, **478 asercoes**, exit 0 |
 | Validado em hardware fisico | **nada** |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
@@ -265,6 +266,50 @@ codigo atual e sem intervencao, **ainda nao foi feita**.
 
 ---
 
+## Ciclo 4 — bare metal (2026-09-02): primeira execucao em hardware real
+
+ASUS TUF GAMING B760M-E D4 · i5-12600K · RTX 5060 Ti (Blackwell) · 32 GiB ·
+`ROOT_FS=btrfs`.
+
+### 4.1 — `06-sudo` falhou: `/etc/sudoers.d` nao existia
+
+```
+install: cannot create regular file '/etc/sudoers.d/10-wheel': No such file or directory
+[ERRO] falha ao publicar /etc/sudoers.d/10-wheel
+[ERRO] etapa 06-users-services.sh falhou
+[ERRO] fase chroot falhou
+```
+
+Os tres `[ERRO]` sao cascata de uma causa unica: `emerge app-admin/sudo` **nao
+cria** `/etc/sudoers.d`. O `@includedir /etc/sudoers.d` no `/etc/sudoers` existe
+e aponta para um diretorio inexistente — para o sudo isso **nao e erro**, ele
+simplesmente ignora o include. Logo `_sudoers_includes_dir` passou (a linha
+estava la) e o `install` morreu logo depois.
+
+**Correcao:** `install -d -m 0750 -o root -g root /etc/sudoers.d` antes de
+publicar (0750 root:root e o modo do upstream do sudo). Uma asercao nova cobra
+que a criacao venha **antes** da publicacao.
+
+**Por que os testes nao pegaram:** as asercoes do `06-sudo` cobriam ordem
+(`visudo` antes do `install`), modo (`0440`), semantica de `ENABLE_SUDO=no` e o
+regex do `includedir` — tudo sobre o *conteudo* e a *sequencia*, nada sobre o
+*ambiente* em que a etapa roda. Nenhum teste de host pode observar que o ebuild
+do sudo nao cria um diretorio; isso so aparece executando.
+
+> A etapa estava documentada como "nunca executada" no commit que a introduziu.
+> Falhou na primeira execucao. O registro estava correto, e essa e a unica razao
+> pela qual a falha nao foi surpresa.
+
+### Observacao: sudo puxa um MTA
+
+O `emerge` trouxe `mail-mta/nullmailer` junto (`acct-user/nullmail`,
+`acct-group/nullmail`). E o USE `sendmail` do sudo, ligado por default, que puxa
+`virtual/mta` — o sudo o usa para mandar email ao admin em tentativa negada.
+Nada e habilitado no boot, entao o MTA fica inerte. `app-admin/sudo -sendmail`
+evitaria a dependencia; **nao alterado** sem decisao do operador.
+
+---
+
 ## O que continua sem validacao
 
 | | Por que |
@@ -276,7 +321,7 @@ codigo atual e sem intervencao, **ainda nao foi feita**.
 | NVMe fisico, rede e audio da B760M-E | Dispositivos virtio na VM |
 | Suspend/resume | Nunca executado |
 | Instalacao limpa com o codigo atual, sem intervencao | Nunca executada |
-| Etapa `06-sudo` | Escrita em 2026-09-02, depois do Ciclo 3 — **nunca executada** |
+| Etapa `06-sudo` | Primeira execucao no bare metal falhou e foi corrigida (ver Ciclo 4); a versao corrigida ainda **nao rodou** |
 | Branch `INIT_SYSTEM=systemd` | Nunca executado |
 
 ---
@@ -586,5 +631,5 @@ completo com boot. O ext4 continua com dois.
 
 | | |
 |---|---|
-| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 477 asercoes. Nao validada em bare metal nem com btrfs |
+| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 478 asercoes. Nao validada em bare metal nem com btrfs |
 | Desktop | **Baixa, inalterada** — nunca executado. Esta rodada melhorou consistencia e cobertura de teste; nao substitui execucao |

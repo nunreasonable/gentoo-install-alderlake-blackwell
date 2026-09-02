@@ -333,6 +333,17 @@ else
         no "do_sudo publica sem validar antes (check=$ln_check publish=$ln_pub)"
     fi
 
+    # O diretorio tem de ser criado ANTES de publicar nele. O emerge do sudo nao
+    # o cria, e o @includedir para um diretorio inexistente nao e erro para o
+    # sudo — falhou no bare metal em 2026-09-02 com "No such file or directory".
+    ln_mkdir="$(grep -n 'install -d' <<< "$sudo_fn" | head -1 | cut -d: -f1)"
+    if [[ -n "$ln_mkdir" && -n "$ln_pub" ]] && (( ln_mkdir < ln_pub )); then
+        ok "do_sudo cria /etc/sudoers.d antes de publicar nele"
+    else
+        no "do_sudo publica em /etc/sudoers.d sem garantir que o diretorio existe" \
+           "mkdir=$ln_mkdir publish=$ln_pub"
+    fi
+
     # 0440: o sudo recusa ler sudoers com permissao mais frouxa.
     if grep -qE 'install -m 0440 -o root -g root' <<< "$sudo_fn"; then
         ok "o drop-in e publicado com 0440 root:root"
