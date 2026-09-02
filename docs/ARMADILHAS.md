@@ -422,6 +422,42 @@ grub-mkconfig -o /boot/grub/grub.cfg
 Efeito colateral: **sem console grafico ate o nvidia-drm assumir** — a tela fica
 preta no inicio do boot por design. Isso e esperado, nao e falha.
 
+### Ultimo recurso: a iGPU como saida de emergencia
+
+Se nada acima devolver imagem, existe um caminho independente do NVIDIA. O
+kernel do projeto traz **`CONFIG_DRM_I915=m`** de proposito — a iGPU do
+i5-12600K (UHD 770).
+
+Na maquina de referencia a iGPU esta **desligada na UEFI**, entao esse modulo
+normalmente nem carrega. Ele existe exatamente para esta hora:
+
+1. Desligue a maquina e entre na UEFI (`Del` no POST, na ASUS).
+2. Habilite a iGPU. Na TUF B760M-E costuma estar em
+   **Advanced → System Agent (SA) Configuration → Graphics Configuration**,
+   como `iGPU Multi-Monitor` (Enabled) ou `Primary Display` (IGFX/Auto).
+3. **Mova o cabo do monitor** para a saida de video da PLACA-MAE (HDMI ou
+   DisplayPort da placa, nao da GPU). Este passo e o mais esquecido: habilitar a
+   iGPU sem trocar o cabo continua dando tela preta, e voce conclui que nao
+   funcionou.
+4. Bote. O `i915` carrega apos a raiz montar e assume o video.
+
+Voce entra num sistema **funcionando**, com rede e terminal, para diagnosticar o
+NVIDIA com calma:
+
+```sh
+lsmod | grep -E 'nvidia|i915'
+dmesg | grep -iE 'nvidia|nvrm|gsp|drm' | tail -40
+modinfo nvidia | grep ^version
+ls /lib/firmware/nvidia/*/gsp_*.bin
+```
+
+Sem essa rede de seguranca, o mesmo resgate exigiria **recompilar o kernel** —
+pela tela preta que voce esta tentando consertar, ou de dentro de um chroot no
+live USB. Por isso o `i915` esta la mesmo sem nunca ser usado no dia a dia.
+
+Depois de resolver, desligue a iGPU de novo (ou nao — ela nao atrapalha; so
+consome alguns MB de RAM de sistema e um pouco de tempo de boot).
+
 **Nao conclua que a instalacao falhou por causa de tela preta** antes de testar
 o acesso por SSH: o sistema pode estar rodando perfeitamente sem video.
 
