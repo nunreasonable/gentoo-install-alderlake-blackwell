@@ -17,7 +17,7 @@ leitura de codigo.
 | Instalacoes em **bare metal** | **1 em andamento** (2026-09-02) |
 | Bugs encontrados por execucao | **13** (12 no codigo, 1 de ergonomia) |
 | Bugs encontrados por analise estatica | **0** dos 13 acima |
-| Suite de testes do host | 10 grupos, **478 asercoes**, exit 0 |
+| Suite de testes do host | 10 grupos, **481 asercoes**, exit 0 |
 | Validado em hardware fisico | **nada ainda** — primeira instalacao em curso |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
@@ -307,6 +307,37 @@ O `emerge` trouxe `mail-mta/nullmailer` junto (`acct-user/nullmail`,
 `virtual/mta` — o sudo o usa para mandar email ao admin em tentativa negada.
 Nada e habilitado no boot, entao o MTA fica inerte. `app-admin/sudo -sendmail`
 evitaria a dependencia; **nao alterado** sem decisao do operador.
+
+### 4.2 — `ROOT_FS` esquecido de novo, agora numa instalacao limpa
+
+A instalacao do bare metal foi ate o `06` com **ext4**, nao btrfs: a variavel
+nao estava no ambiente. Terceira vez na mesma semana.
+
+O guard `_assert_root_fs_not_forgotten` (3.3) **nao se aplica** aqui, e
+corretamente: ele compara o filesystem existente com o declarado, e num disco
+em branco nao ha filesystem para comparar. Ele protege retomadas, nao a
+primeira execucao.
+
+A causa real e outra: o prompt do `ERASE` mostrava so o que seria **destruido**
+(`lsblk` + `sgdisk -p`). O que seria **criado** vivia apenas no `vars.sh`. O
+unico momento em que o operador para e le nao dizia qual filesystem ia sair
+dali.
+
+**Correcoes, duas:**
+
+1. `confirm_destruction` passa a imprimir o plano — as tres particoes com
+   tamanhos, o `ROOT_FS`, o usuario e seus grupos — antes do prompt.
+2. O default do `vars.sh` virou `ROOT_FS=btrfs`, com a instrucao de **editar o
+   arquivo** em vez de exportar a variavel. Um default correto elimina a classe
+   inteira do erro; a variavel de ambiente continua funcionando como override
+   pontual.
+
+Tres asercoes cobram que o prompt nomeie o filesystem e o usuario, e que o
+plano venha antes da confirmacao.
+
+> As duas correcoes de `ROOT_FS` deste ciclo atacam pontas diferentes: 3.3
+> impede o estrago numa retomada, 4.2 impede o erro na origem. Nenhuma das duas
+> sozinha teria evitado as tres ocorrencias.
 
 ---
 
@@ -631,5 +662,5 @@ completo com boot. O ext4 continua com dois.
 
 | | |
 |---|---|
-| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 478 asercoes. Nao validada em bare metal nem com btrfs |
+| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 481 asercoes. Nao validada em bare metal nem com btrfs |
 | Desktop | **Baixa, inalterada** — nunca executado. Esta rodada melhorou consistencia e cobertura de teste; nao substitui execucao |

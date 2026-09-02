@@ -32,18 +32,23 @@
 
 # Filesystem da raiz: ext4 | xfs | btrfs
 #
-# O Handbook atual recomenda xfs; ext4 continua perfeitamente suportado e e o
-# unico que ja bootou em QEMU (duas vezes) — por isso segue como default.
+# Evidencia: ext4 tem dois boots em QEMU, btrfs tem um. Os dois funcionam.
+# O default e btrfs porque e o que esta maquina usa; quem quiser ext4 troca
+# aqui.
+#
+# EDITE ESTA LINHA em vez de exportar ROOT_FS no ambiente. A variavel de
+# ambiente vale so para a execucao em que voce a digitou, e o instalador retoma
+# varias vezes ate terminar — esquece-la numa retomada faz o 00 comparar o
+# filesystem real com o default e reclamar (corretamente) que nao batem.
 #
 # btrfs: layout SIMPLES, um volume unico, SEM subvolumes. O instalador monta a
 # raiz direto e o fstab nao carrega subvol=... Se voce quer o esquema @/@home
-# do Fedora, crie os subvolumes depois, com o sistema no ar.
+# do Fedora, crie os subvolumes depois, com o sistema no ar. O mkfs desliga
+# 'block-group-tree' — obrigatorio, o GRUB nao le com ela ligada.
+#
 # O kernel embute os tres (BTRFS_FS=y) porque, sem initramfs, driver de
 # filesystem raiz como modulo e um sistema que nao boota.
-#
-# ATENCAO: btrfs NUNCA foi exercitado por este instalador — nem em QEMU. ext4 e
-# o caminho com evidencia.
-: "${ROOT_FS:=ext4}"
+: "${ROOT_FS:=btrfs}"
 
 # Ponto de montagem do sistema alvo durante a fase live (padrao do Handbook).
 : "${TARGET_ROOT:=/mnt/gentoo}"

@@ -31,7 +31,7 @@ Esta secao e a informacao mais importante do repositorio. Ela e literal.
 | `bash -n` (sintaxe) em todos os scripts | **Passou** |
 | ShellCheck (container, repo montado read-only) | **Passou** |
 | Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
-| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 478 asercoes em 10 grupos |
+| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 481 asercoes em 10 grupos |
 
 ### Execucao em QEMU/OVMF — **tres ciclos completos, com boot** (2026-09-01/02)
 
@@ -313,9 +313,11 @@ Duas que mudam o sistema resultante e costumam ser esquecidas:
 | `USERNAME` | `daeese` | Usuario nao-root criado. Nasce em `USER_GROUPS` (`wheel,audio,video,usb,portage`) |
 | `ENABLE_SUDO` | `yes` | Instala `app-admin/sudo` e publica `/etc/sudoers.d/10-wheel` (`%wheel ALL=(ALL:ALL) ALL`, **com senha**). `no` e omissao: nada e instalado e nada existente e removido |
 
-O `ROOT_FS` **nao fica gravado** no sistema instalado. Se voce instalou com
-`ROOT_FS=btrfs`, repita a variavel em toda retomada — sem ela o `vars.sh` cai no
-default `ext4` e o `00` reclama (corretamente) que a raiz nao bate.
+| `ROOT_FS` | `btrfs` | Filesystem da raiz (`ext4`\|`xfs`\|`btrfs`). **Edite o `vars.sh`**, nao exporte no ambiente: a variavel se perde nas retomadas, e o instalador retoma varias vezes |
+
+O prompt do `ERASE` mostra o filesystem e o usuario que serao criados, alem do
+estado atual do disco. Se o `ROOT_FS` ali nao for o que voce queria, aborte —
+depois do `ERASE` o custo de trocar e reinstalar.
 
 ---
 

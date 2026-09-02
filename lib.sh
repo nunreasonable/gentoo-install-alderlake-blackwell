@@ -1180,6 +1180,23 @@ confirm_destruction() {
     log_warn "=================================================================="
     lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINT "$TARGET_DISK" || true
     sgdisk -p "$TARGET_DISK" || true
+
+    # O plano, nao so o estrago. Ate aqui o prompt mostrava apenas o que seria
+    # DESTRUIDO; o que seria CRIADO ficava so no vars.sh. Isso deixava invisivel
+    # justamente o erro mais facil de cometer — instalar com o ROOT_FS errado —
+    # que so aparece na primeira retomada, ou nunca. Aconteceu tres vezes
+    # durante o desenvolvimento, a ultima no bare metal.
+    log_warn "------------------------------------------------------------------"
+    log_warn "O que sera CRIADO no lugar:"
+    log_warn "  particao 1  ${EFI_SIZE}   ESP (vfat)  -> /efi"
+    log_warn "  particao 2  ${SWAP_SIZE}   swap"
+    log_warn "  particao 3  ${ROOT_SIZE:-resto do disco}   raiz (${ROOT_FS})  -> /"
+    log_warn "  usuario '${USERNAME}' nos grupos: ${USER_GROUPS}"
+    log_warn "ROOT_FS='${ROOT_FS}': se nao e o filesystem que voce queria, ABORTE"
+    log_warn "agora e edite o vars.sh. Nao exporte a variavel no ambiente — ela"
+    log_warn "se perde nas retomadas, e o instalador retoma varias vezes."
+    log_warn "=================================================================="
+
     if [[ "$AUTO_CONFIRM" == "yes" ]]; then
         if _host_is_installed_system; then
             # AUTO_CONFIRM vazado do ambiente num host real e o pior cenario:

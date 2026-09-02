@@ -232,4 +232,35 @@ else
     ok "TARGET_DISK nunca e derivado de lsblk/blkid/find/ls"
 fi
 
+# --- o prompt de destruicao tem de mostrar o PLANO, nao so o estrago --------
+# ROOT_FS foi esquecido tres vezes durante o desenvolvimento, uma delas no bare
+# metal (instalou ext4 querendo btrfs). O prompt do ERASE e o unico momento em
+# que o operador para e le; se o filesystem a criar nao aparece ali, o erro so
+# se revela na primeira retomada — ou nunca.
+printf '\n  -- plano visivel antes do ERASE --\n'
+
+cd_fn="$(extract_fn "$REPO_DIR/lib.sh" confirm_destruction)"
+if [[ -z "$cd_fn" ]]; then
+    no "confirm_destruction nao existe"
+else
+    ln_fs="$(grep -n 'ROOT_FS' <<< "$cd_fn" | head -1 | cut -d: -f1)"
+    ln_prompt="$(grep -n 'digite exatamente' <<< "$cd_fn" | head -1 | cut -d: -f1)"
+    if [[ -n "$ln_fs" ]]; then
+        ok "confirm_destruction nomeia o ROOT_FS que sera criado"
+    else
+        no "confirm_destruction nao mostra o filesystem a criar" \
+           "o operador digita ERASE sem ver o que vai ser feito no lugar"
+    fi
+    if [[ -n "$ln_fs" && -n "$ln_prompt" ]] && (( ln_fs < ln_prompt )); then
+        ok "o plano aparece ANTES do prompt de confirmacao"
+    else
+        no "o plano aparece depois do prompt (fs=$ln_fs prompt=$ln_prompt)"
+    fi
+    if grep -q 'USERNAME' <<< "$cd_fn"; then
+        ok "confirm_destruction nomeia o usuario que sera criado"
+    else
+        no "confirm_destruction nao mostra o usuario a criar"
+    fi
+fi
+
 finish

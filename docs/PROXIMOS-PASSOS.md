@@ -17,7 +17,7 @@ mais. Diz onde as coisas pararam, o que fazer a seguir e como sair do buraco.
 | Bare metal | **Nunca** |
 | WiFi (`iwd`) no sistema instalado | Implementado, **nunca executado** |
 
-Suíte do host: `./tests/run-tests.sh` → 478 asserções. Testes estáticos não
+Suíte do host: `./tests/run-tests.sh` → 481 asserções. Testes estáticos não
 provam boot.
 
 ---
