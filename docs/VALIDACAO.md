@@ -18,11 +18,11 @@ leitura de codigo.
 | Bugs encontrados por execucao | **13** (12 no codigo, 1 de ergonomia) |
 | Bugs encontrados por analise estatica | **0** dos 13 acima |
 | Suite de testes do host | 10 grupos, **478 asercoes**, exit 0 |
-| Validado em hardware fisico | **nada** |
+| Validado em hardware fisico | **nada ainda** — primeira instalacao em curso |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
 auditoria adversarial multi-agente de 13 dimensoes passaram por cima de **todos
-os nove**. Cada um exigiu executar o codigo.
+os treze**. Cada um exigiu executar o codigo.
 
 ---
 
