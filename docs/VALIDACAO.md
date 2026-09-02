@@ -507,6 +507,19 @@ para o prompt `REFORMAT`.
 Oito asercoes cobrem a matriz: caso real, disco em branco, tipos iguais, GPT
 recriado e filesystem alheio.
 
+**Confirmado em execucao** (2026-09-02, mesma sessao): a reexecucao seguinte,
+novamente sem a variavel, abortou com a mensagem nova em vez da antiga:
+
+```
+[00-mkfs-root] executando...
+[ERRO] a raiz /dev/vda3 ja contem um filesystem 'btrfs', mas esta execucao declara
+ROOT_FS='ext4'. [...] Para RETOMAR a instalacao que esta no disco:
+ROOT_FS=btrfs ./install.sh.
+```
+
+Este e um dos poucos itens deste documento cuja **correcao** — nao so o bug —
+foi verificada rodando o instalador.
+
 > Achado por **operacao**, nao por execucao do codigo de teste: a instrucao que
 > eu mesmo dei ao operador omitia a variavel.
 
