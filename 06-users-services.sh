@@ -496,7 +496,16 @@ do_services() {
     fi
     if [[ "$ENABLE_WIFI" == "yes" ]]; then
         svc_enable iwd
-        log_info "iwd habilitado. Apos o boot: 'iwctl station wlan0 connect NOME-DA-REDE'"
+        # NAO diga "wlan0": o Gentoo usa nomes previsiveis de interface, entao a
+        # AX210 aparece como wlp6s0 ou parecido. Mandar o operador digitar wlan0
+        # e entregar um comando que falha exatamente quando ele mais precisa —
+        # sem rede, sem como pesquisar o motivo.
+        log_info "iwd habilitado. Apos o boot, descubra o dispositivo e conecte:"
+        log_info "    iwctl device list"
+        log_info "    iwctl station <dispositivo> scan"
+        log_info "    iwctl station <dispositivo> get-networks"
+        log_info "    iwctl station <dispositivo> connect NOME-DA-REDE"
+        log_info "O IP vem do dhcpcd: o initscript do iwd declara 'before dhcpcd'."
     else
         log_info "ENABLE_WIFI=no — iwd nao sera habilitado no boot"
     fi
