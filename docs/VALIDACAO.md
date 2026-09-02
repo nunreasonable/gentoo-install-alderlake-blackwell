@@ -544,6 +544,31 @@ real; nenhuma linha `initrd`, coerente com o design sem initramfs.
 normal, runlevel 3 completo — `syslogd`, `cronie`, `dbus`, `iwd`, `dhcpcd`,
 `sshd`. Raiz btrfs montada e remontada read-write pelo OpenRC.
 
+**Confirmacao pelo sistema em execucao** (`fastfetch`, apos `emerge` bem-sucedido
+no proprio sistema instalado — o que tambem prova que o Portage funciona pos-boot):
+
+```
+OS: Gentoo Linux x86_64
+Kernel: Linux 6.18.48-gentoo
+Packages: 377 (emerge)
+CPU: 6 x 12th Gen Intel(R) Core(TM) i5-12600K (6) @ 3.69 GHz
+Swap: 0 B / 16.00 GiB (0%)
+Disk (/): 8.98 GiB / 43.00 GiB (21%) - btrfs
+Local IP (enp1s0): 192.168.122.61/24
+Locale: pt_BR.utf8
+```
+
+A linha `Disk (/): ... btrfs` e a evidencia direta: o filesystem raiz declarado
+foi o que o sistema em execucao reporta. Junto vem a confirmacao de quatro
+coisas que as etapas anteriores prometeram e ninguem tinha visto funcionando ao
+mesmo tempo: swap de 16 GiB ativa (`00`), locale `pt_BR.utf8` (`03`), rede por
+DHCP (`06`) e o Portage operando no alvo.
+
+> A CPU reportada e a **real** (i5-12600K), nao uma generica do QEMU: o `-cpu
+> host` esta passando. Como o bare metal alvo tem essa mesma CPU, o aviso do
+> preflight sobre `-march=native` ("o build so serve se o alvo tiver a MESMA
+> CPU") esta satisfeito neste caso — coincidencia util, nao garantia.
+
 Com isso o `ROOT_FS=btrfs` sai da lista de "sem validacao": ele tem **um** ciclo
 completo com boot. O ext4 continua com dois.
 
