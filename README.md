@@ -31,7 +31,7 @@ Esta secao e a informacao mais importante do repositorio. Ela e literal.
 | `bash -n` (sintaxe) em todos os scripts | **Passou** |
 | ShellCheck (container, repo montado read-only) | **Passou** |
 | Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
-| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 571 asercoes em 10 grupos |
+| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 579 asercoes em 10 grupos |
 
 ### Execucao em QEMU/OVMF — **tres ciclos completos, com boot** (2026-09-01/02)
 
@@ -481,9 +481,15 @@ Ressalvas que continuam valendo:
   etapa do projeto que compila codigo de terceiro a partir do git, e o Portage
   nao rastreia o resultado. Nao ha `emerge --unmerge` para desfazer.
 - **O upstream se descreve como "Works on my machine."** e esta em
-  desenvolvimento ativo. Por isso `DESKTOP_CLAVIS_REF` existe: fixe uma tag em
-  vez de seguir um branch movel, senao duas execucoes em dias diferentes
-  produzem sistemas diferentes.
+  desenvolvimento ativo. Ele **nao publica tag nenhuma** (`git ls-remote --tags`
+  volta vazio), entao os tres `*_REF` fixam **commits**, nao `main`. Sem isso,
+  duas execucoes em dias diferentes produziriam sistemas diferentes.
+- **Uma fonte e baixada fora do Portage.** A Material Symbols Rounded nao
+  existe em `::gentoo` nem na GURU, e o `Components/MaterialSymbol.qml` do
+  Clavis a usa em 121 arquivos com eixos variaveis (`FILL`, `opsz`) que um TTF
+  estatico nao reproduz. Sem ela o shell sobe, mas quase todo icone vira tofu.
+  E o unico download fora do gerenciador de pacotes em todo o projeto, e ele
+  **nunca aborta**: falha de rede vira aviso.
 
 **Nunca foi executado.** Foi escrito a partir de leitura do upstream e dos
 ebuilds, com revisao adversarial, e nao substitui uma execucao.

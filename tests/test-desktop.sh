@@ -1271,4 +1271,63 @@ else
     no "audit_clavis_migration nao e chamada no nivel do script"
 fi
 
+# --- refs fixos e fontes -----------------------------------------------------
+# O upstream do Clavis NAO publica tags (git ls-remote --tags volta vazio,
+# verificado em 2026-09-03). Sem tag, seguir 'main' faz duas execucoes em dias
+# diferentes produzirem sistemas diferentes — o oposto do que este projeto
+# persegue. Logo: SHA fixo.
+printf '\n  -- Clavis: refs e fontes --\n'
+
+for v in DESKTOP_CLAVIS_REF DESKTOP_CLAVIS_KEY_REF DESKTOP_CLAVIS_KEYTOP_REF; do
+    val="$(sed -n "s/^: \"\${${v}:=\([^}]*\)}\"/\1/p" "$VARS_D" | head -1)"
+    if [[ "$val" == "main" || "$val" == "master" || -z "$val" ]]; then
+        no "$v aponta para um branch movel ('$val')" \
+           "sem tags no upstream, so um SHA torna a instalacao reproduzivel"
+    elif [[ "$val" =~ ^[0-9a-f]{7,40}$ ]]; then
+        ok "$v fixa um commit ($val), nao um branch movel"
+    else
+        no "$v tem valor inesperado: '$val'"
+    fi
+done
+
+# Material Symbols nao existe no Portage e e usada em 121 arquivos do Clavis,
+# com eixos variaveis que fallback estatico nao reproduz.
+cf="$(extract_fn "$DESKTOP_DIR/16-clavis.sh" do_clavis_fonts)"
+if [[ -z "$cf" ]]; then
+    no "16-clavis nao instala as fontes do Clavis"
+else
+    ok "16-clavis tem sub-etapa de fontes"
+    if grep -q 'MaterialSymbols' <<< "$(cat "$VARS_D")"; then
+        ok "a URL da Material Symbols e configuravel em vars-desktop.sh"
+    else
+        no "a URL da Material Symbols esta embutida no script"
+    fi
+    # Download fora do Portage nunca pode abortar a instalacao: a falta de
+    # fonte no Clavis nao gera erro, so icone ausente.
+    # Comentarios removidos antes do grep: o proprio comentario que explica
+    # "aviso e nao die" contem a palavra. E o bug recorrente numero 1 daqui —
+    # o teste casar com a documentacao dele mesmo.
+    curl_block="$(sed -n '/curl/,/^    fi/p' <<< "$cf" | sed -e 's/[[:space:]]#.*$//' -e 's/^[[:space:]]*#.*$//')"
+    if grep -qE '\bdie\b' <<< "$curl_block"; then
+        no "a falha de download de fonte pode abortar a etapa" \
+           "sem rede, a instalacao inteira morreria por um problema cosmetico"
+    else
+        ok "falha ao baixar fonte avisa, nunca aborta"
+    fi
+    # Promocao so depois de verificar: um TTF truncado no lugar do bom faz o
+    # probe mentir, com sintoma identico ao de nao ter baixado.
+    if grep -q 'parcial' <<< "$cf"; then
+        ok "o download vai para um temporario e so e promovido depois de verificado"
+    else
+        no "o download escreve direto no destino" "um arquivo truncado ficaria no lugar do bom"
+    fi
+fi
+pf="$(extract_fn "$DESKTOP_DIR/16-clavis.sh" probe_clavis_fonts)"
+if grep -q 'fc-list' <<< "$pf"; then
+    ok "o probe de fontes consulta o fontconfig, nao a existencia do arquivo"
+else
+    no "o probe de fontes so olha o arquivo" \
+       "arquivo presente nao prova que o fontconfig o enxerga (cache, diretorio, truncamento)"
+fi
+
 finish

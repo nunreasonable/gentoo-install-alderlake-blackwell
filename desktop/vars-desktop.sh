@@ -496,7 +496,23 @@ _DESKTOP_NOTIFY_SET="${DESKTOP_NOTIFY+1}"
 #
 # Para ver o que existe:  git ls-remote --tags $DESKTOP_CLAVIS_URL
 : "${DESKTOP_CLAVIS_URL:=https://github.com/StatIndet/quickshell}"
-: "${DESKTOP_CLAVIS_REF:=main}"
+#
+# COMMIT FIXO, e nao 'main'. Verificado em 2026-09-03: o upstream NAO publica
+# tag nenhuma (`git ls-remote --tags` volta vazio), entao um SHA e a unica
+# forma de duas execucoes produzirem o mesmo sistema.
+#
+# Por que este e nao o HEAD: o HEAD daquele dia (d49555e1) chamava-se
+# "Debug：测试MapLibre Probe" e adicionava Modules/Debug/MapLibreProbe*.qml —
+# inerte (so alcancavel pelo alvo IPC 'maplibre-probe', que nada invoca), mas
+# fixar o default de outras pessoas na sessao de depuracao de alguem e ma
+# forma. 0ad6c661 e o commit imediatamente anterior, um 'chore' normal.
+#
+# Para subir a versao: leia o log, escolha um commit que nao seja de debug, e
+# troque aqui. O probe do 16 compara o marker com este valor, entao trocar
+# invalida a sub-etapa e reconstroi sozinho.
+#     gh api "repos/StatIndet/quickshell/commits?sha=main&per_page=20" \
+#       --jq '.[] | "\(.sha[0:8])  \(.commit.message|split("\n")[0])"'
+: "${DESKTOP_CLAVIS_REF:=0ad6c661}"
 
 # Onde o checkout vive. Fica no HOME porque quem COMPILA e o usuario: compilar
 # como root deixaria a build-tree e o cache do Qt com dono root dentro do HOME,
@@ -510,7 +526,8 @@ _DESKTOP_NOTIFY_SET="${DESKTOP_NOTIFY+1}"
 # o `pip --user` fica versionado pelo minor do Python (um `eselect python set`
 # faria o comando sumir do PATH), e dev-python/pipx NAO existe na arvore.
 : "${DESKTOP_CLAVIS_KEY_URL:=https://github.com/StatIndet/key-cli}"
-: "${DESKTOP_CLAVIS_KEY_REF:=main}"
+# Mesmo motivo do DESKTOP_CLAVIS_REF: sem tags, SHA fixo.
+: "${DESKTOP_CLAVIS_KEY_REF:=1873258b}"
 : "${DESKTOP_CLAVIS_KEY_VENV:=/opt/clavis/key-cli}"
 
 # keytop: monitor de sistema que alimenta os graficos de CPU/GPU do shell.
@@ -521,7 +538,7 @@ _DESKTOP_NOTIFY_SET="${DESKTOP_NOTIFY+1}"
 # sessao grafica.
 : "${DESKTOP_CLAVIS_KEYTOP:=yes}"
 : "${DESKTOP_CLAVIS_KEYTOP_URL:=https://github.com/StatIndet/keytop}"
-: "${DESKTOP_CLAVIS_KEYTOP_REF:=main}"
+: "${DESKTOP_CLAVIS_KEYTOP_REF:=8c2f998d}"
 : "${DESKTOP_CLAVIS_KEYTOP_SRC:=${HOME:-/home/$USERNAME}/src/clavis-keytop}"
 
 # ---------------------------------------------------------------------------
@@ -538,3 +555,30 @@ if [[ "$DESKTOP_CLAVIS" == "yes" ]]; then
     [[ -n "$_DESKTOP_NOTIFY_SET" ]] || DESKTOP_NOTIFY=none
 fi
 unset _DESKTOP_BAR_SET _DESKTOP_NOTIFY_SET
+
+# Instalar as fontes que o Clavis exige? (yes|no)
+#
+# O Clavis pede tres familias em Common/Fonts.qml. Situacao de cada uma,
+# verificada na arvore do Portage em 2026-09-03:
+#
+#   Material Symbols Rounded  NAO EXISTE em ::gentoo nem na GURU. E o caso
+#                             CRITICO: Components/MaterialSymbol.qml e usado em
+#                             121 arquivos e exige a fonte VARIAVEL (eixos FILL
+#                             e opsz) — fallback estatico nao reproduz. Sem
+#                             ela, praticamente todo icone da barra, do tray,
+#                             dos quick settings e das sidebars vira tofu.
+#                             E o unico download fora do Portage deste projeto.
+#
+#   JetBrainsMono Nerd Font   media-fonts/nerdfonts[jetbrainsmono] (GURU) da
+#                             exatamente essa familia.
+#
+#   LXGW WenKai GB Screen     media-fonts/lxgw-wenkai (::gentoo) tem a familia
+#                             base, nao a variante "GB Screen". Degrada bem: e
+#                             fonte CJK e o resolveFamily() do Clavis nunca
+#                             quebra, so cai no fallback do Qt.
+#
+# 'no' se voce prefere instalar fontes a mao. O shell sobe de qualquer forma —
+# a falta de fonte no Clavis nunca gera erro, so icone ausente, que e
+# justamente por que vale avisar.
+: "${DESKTOP_CLAVIS_FONTS:=yes}"
+: "${DESKTOP_CLAVIS_SYMBOLS_URL:=https://github.com/google/material-design-icons/raw/master/variablefont/MaterialSymbolsRounded%5BFILL%2CGRAD%2Copsz%2Cwght%5D.ttf}"

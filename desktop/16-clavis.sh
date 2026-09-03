@@ -51,7 +51,8 @@ fi
 # /etc/portage, compilacao no HOME do usuario, venv em /opt e uma linha nova no
 # config.kdl. Tudo que veio antes e leitura.
 dry_run_guard 16-clavis-keywords 16-clavis-use 16-clavis-deps \
-              16-clavis-build 16-key-cli 16-keytop 16-clavis-autostart
+              16-clavis-build 16-key-cli 16-keytop 16-clavis-fonts \
+              16-clavis-autostart
 
 CLAVIS_SRC="$DESKTOP_CLAVIS_SRC"
 CLAVIS_BUILD="$CLAVIS_SRC/build"
@@ -545,6 +546,106 @@ do_clavis_autostart() {
 
     log_warn "O Clavis so sobe no PROXIMO login da sessao grafica — o spawn-at-startup roda quando o niri inicia, nao agora."
 }
+
+# ---------------------------------------------------------------------------
+# 16-clavis-fonts — o unico download fora do Portage deste projeto
+# ---------------------------------------------------------------------------
+#
+# Duas das tres familias que o Clavis pede estao empacotadas e entram por
+# emerge. A Material Symbols Rounded NAO existe em ::gentoo nem na GURU
+# (verificado listando media-fonts/ dos dois em 2026-09-03), e nao ha
+# substituto: o symbols-nerd-font que o modulo ja instala e Nerd Fonts
+# (Powerline/Devicons), conjunto de glifos completamente diferente.
+#
+# Ela e obrigatoria de fato: Components/MaterialSymbol.qml e usado em 121
+# arquivos e declara variableAxes com FILL e opsz — exige a fonte VARIAVEL, que
+# um TTF estatico nao reproduz.
+#
+# NADA AQUI E FATAL. O resolveFamily() do Clavis nunca lanca erro: sem a fonte,
+# o shell sobe com tofu no lugar dos icones. Feio, diagnosticavel, e muito
+# melhor que abortar a instalacao por causa de um download que pode falhar por
+# falta de rede. Por isso todo o bloco avisa em vez de morrer.
+CLAVIS_FONT_PKGS=(
+    media-fonts/nerdfonts   # [jetbrainsmono] da "JetBrainsMono Nerd Font"
+    media-fonts/lxgw-wenkai # familia base; a variante "GB Screen" nao e empacotada
+)
+CLAVIS_SYMBOLS_TTF_NAME='MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf'
+
+clavis_symbols_path() {
+    printf '%s/.local/share/fonts/%s\n' "$(user_home)" "$CLAVIS_SYMBOLS_TTF_NAME"
+}
+
+probe_clavis_fonts() {
+    [[ "$DESKTOP_CLAVIS_FONTS" == "yes" ]] || return 0
+    # fc-list e a autoridade: o arquivo existir nao prova que o fontconfig o
+    # enxerga (cache desatualizado, diretorio errado, arquivo truncado).
+    run_as_user fc-list 2>/dev/null | grep -qi 'Material Symbols Rounded' || return 1
+    local pkg
+    for pkg in "${CLAVIS_FONT_PKGS[@]}"; do
+        pkg_installed "$pkg" || return 1
+    done
+}
+
+do_clavis_fonts() {
+    if [[ "$DESKTOP_CLAVIS_FONTS" != "yes" ]]; then
+        log_info "DESKTOP_CLAVIS_FONTS=no — fontes nao serao instaladas (o shell sobe, mas os icones do Clavis viram tofu)"
+        return 0
+    fi
+
+    # A USE do nerdfonts vai no arquivo proprio do modulo, validada como as
+    # demais. Sem 'jetbrainsmono' o pacote instala so os simbolos.
+    write_managed_file /etc/portage/package.use/clavis-fonts \
+        "$(printf '%s\n' "# Fonte monoespacada que o Clavis pede por nome em Common/Fonts.qml." \
+                          "$(_use_line_clavis media-fonts/nerdfonts jetbrainsmono)")" \
+        "16-clavis.sh"
+
+    emerge --noreplace "${CLAVIS_FONT_PKGS[@]}" \
+        || log_warn "falha ao instalar as fontes empacotadas (${CLAVIS_FONT_PKGS[*]}). O Clavis sobe assim mesmo, com fallback do Qt para as monoespacadas e CJK. Log: $LOGFILE"
+
+    local dest tmp
+    dest="$(clavis_symbols_path)"
+    if run_as_user fc-list 2>/dev/null | grep -qi 'Material Symbols Rounded'; then
+        log_info "Material Symbols Rounded ja esta instalada e visivel ao fontconfig"
+    else
+        if ! run_as_user mkdir -p "$(dirname "$dest")"; then
+            log_warn "nao foi possivel criar o diretorio de fontes de '$DESKTOP_USER' — a Material Symbols nao sera instalada e os icones do Clavis ficarao ausentes."
+            return 0
+        fi
+
+        # Baixa para um temporario e so promove depois de verificar: um TTF
+        # truncado por queda de rede fica no lugar do bom, o fontconfig o
+        # ignora, e o sintoma (icones ausentes) e identico ao de nao ter
+        # baixado nada — mas o probe passaria a mentir que baixou.
+        tmp="${dest}.parcial"
+        if run_as_user curl -fsSL --retry 2 -o "$tmp" "$DESKTOP_CLAVIS_SYMBOLS_URL"; then
+            # A fonte tem ~15 MB; qualquer coisa muito menor e pagina de erro
+            # ou download interrompido.
+            local sz
+            sz="$(stat -c %s "$tmp" 2>/dev/null || echo 0)"
+            if (( sz > 1000000 )) && head -c4 "$tmp" | grep -qa $'\x00\x01\x00\x00'; then
+                if run_as_user mv -f "$tmp" "$dest"; then
+                    log_info "Material Symbols Rounded instalada em '$dest' ($sz bytes)"
+                else
+                    # Aviso e nao die, pelo mesmo motivo do resto do bloco:
+                    # nenhuma fonte vale abortar uma instalacao. O pior desfecho
+                    # aqui e icone ausente.
+                    log_warn "o download da fonte deu certo mas nao foi possivel move-la para '$dest'. Confira permissoes do diretorio de fontes de '$DESKTOP_USER'."
+                fi
+            else
+                run_as_user rm -f "$tmp" || true
+                log_warn "o download da Material Symbols Rounded veio invalido ($sz bytes, sem assinatura TTF) — provavelmente uma pagina de erro. Os icones do Clavis ficarao ausentes. Baixe a mao de $DESKTOP_CLAVIS_SYMBOLS_URL para '$dest'."
+            fi
+        else
+            run_as_user rm -f "$tmp" 2>/dev/null || true
+            log_warn "nao foi possivel baixar a Material Symbols Rounded (sem rede?). O Clavis sobe, mas os icones da barra, do tray e das sidebars ficarao ausentes. Baixe depois de $DESKTOP_CLAVIS_SYMBOLS_URL para '$dest' e rode: fc-cache -f"
+        fi
+    fi
+
+    run_as_user fc-cache -f > /dev/null 2>&1 \
+        || log_warn "'fc-cache -f' falhou como '$DESKTOP_USER'; as fontes novas so aparecerao no proximo login."
+}
+
+run_step 16-clavis-fonts probe_clavis_fonts do_clavis_fonts
 
 run_step 16-clavis-autostart probe_clavis_autostart do_clavis_autostart
 
