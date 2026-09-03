@@ -17,7 +17,7 @@ leitura de codigo.
 | Instalacoes em **bare metal** | **1 completa + boot** (2026-09-02), seguida do modulo `desktop/` |
 | Bugs encontrados por execucao | **23** (22 no codigo, 1 de ergonomia) |
 | Bugs encontrados por analise estatica | **0** dos 23 acima |
-| Suite de testes do host | 10 grupos, **589 asercoes**, exit 0 |
+| Suite de testes do host | 11 grupos, **596 asercoes**, exit 0 |
 | Validado em hardware fisico | Base + `desktop/`, **uma execucao**, com intervencao manual em 8 pontos |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
@@ -640,7 +640,7 @@ continua resolvido".
 
 ## Suite de testes do host
 
-`./tests/run-tests.sh` — **140 asercoes**, exit 0. Nenhum teste particiona,
+`./tests/run-tests.sh` — **596 asercoes**, exit 0. Nenhum teste particiona,
 monta, baixa ou compila.
 
 | Grupo | Asercoes | Cobre |
@@ -943,5 +943,5 @@ completo com boot. O ext4 continua com dois.
 
 | | |
 |---|---|
-| Base | **Alta** — tres ciclos QEMU + boot e um bare metal + boot, 589 asercoes. Nenhuma execucao limpa com o codigo atual |
+| Base | **Alta** — tres ciclos QEMU + boot e um bare metal + boot, 596 asercoes. Nenhuma execucao limpa com o codigo atual |
 | Desktop | **Baixa, inalterada** — nunca executado. Esta rodada melhorou consistencia e cobertura de teste; nao substitui execucao |

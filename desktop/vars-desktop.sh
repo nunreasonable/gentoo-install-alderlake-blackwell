@@ -517,7 +517,14 @@ _DESKTOP_NOTIFY_SET="${DESKTOP_NOTIFY+1}"
 # Onde o checkout vive. Fica no HOME porque quem COMPILA e o usuario: compilar
 # como root deixaria a build-tree e o cache do Qt com dono root dentro do HOME,
 # que e a forma silenciosa de quebrar a sessao seguinte.
-: "${DESKTOP_CLAVIS_SRC:=${HOME:-/home/$USERNAME}/src/clavis-shell}"
+# VAZIO = derive do home REAL de DESKTOP_USER, em runtime, na etapa 16.
+#
+# Nao pode ser montado aqui: este arquivo e sourceado como ROOT, entao $HOME
+# vale /root e o default viraria /root/src/clavis-shell — caminho onde o
+# run_as_user nao escreve (0700 root). Adivinhar "/home/$USERNAME" tambem nao
+# serve: o home pode estar em outro lugar, e USERNAME e o usuario do instalador
+# base, nao necessariamente o DESKTOP_USER da sessao grafica.
+: "${DESKTOP_CLAVIS_SRC:=}"
 
 # key-cli: o comando `key`, que e o que efetivamente inicia o shell.
 #
@@ -539,7 +546,7 @@ _DESKTOP_NOTIFY_SET="${DESKTOP_NOTIFY+1}"
 : "${DESKTOP_CLAVIS_KEYTOP:=yes}"
 : "${DESKTOP_CLAVIS_KEYTOP_URL:=https://github.com/StatIndet/keytop}"
 : "${DESKTOP_CLAVIS_KEYTOP_REF:=8c2f998d}"
-: "${DESKTOP_CLAVIS_KEYTOP_SRC:=${HOME:-/home/$USERNAME}/src/clavis-keytop}"
+: "${DESKTOP_CLAVIS_KEYTOP_SRC:=}"
 
 # ---------------------------------------------------------------------------
 # Derivacao: o Clavis desliga o que ele substitui

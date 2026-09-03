@@ -18,7 +18,7 @@ rodar o módulo `desktop/` até uma sessão niri sob Wayland.
 | Bare metal | **Feito** (2026-09-02) — com intervenção manual em 8 pontos |
 | WiFi (`iwd`) no sistema instalado | **Funcionando**, após corrigir 4 símbolos de cripto no kernel |
 
-Suíte do host: `./tests/run-tests.sh` → 571 asserções. Testes estáticos não
+Suíte do host: `./tests/run-tests.sh` → 596 asserções. Testes estáticos não
 provam boot.
 
 ---
@@ -107,12 +107,13 @@ Depois do boot: `/var/log/gentoo-install/`.
 **Retomar:** `./install.sh` de novo. O probe reexamina o disco e pula o que já
 está feito — inclusive depois de reiniciar o live ISO.
 
-**Retomando com `ROOT_FS=btrfs`, repita a variável:** ela não fica gravada em
-lugar nenhum, e o `vars.sh` cai no default `ext4`. Sem ela o `00` vê btrfs no
-disco, conclui que falta formatar e propõe destruir a instalação pronta:
+**O default do `vars.sh` é `btrfs`** desde 2026-09-02. Se você instalou em
+**ext4**, é essa a variável que precisa repetir em toda retomada — sem ela o
+`00` vê ext4 no disco, compara com o btrfs declarado e propõe destruir a
+instalação pronta:
 
 ```sh
-ROOT_FS=btrfs ./install.sh
+ROOT_FS=ext4 ./install.sh
 ```
 
 O instalador diagnostica esse caso e aborta com o comando certo, mas repetir a
@@ -133,10 +134,9 @@ nasce no grupo `wheel` e portanto com `sudo` (senha propria, sem NOPASSWD).
 
 ## O que ainda não tem evidência
 
-- Bare metal, em qualquer forma
-- Runtime do NVIDIA na Blackwell — o QEMU validou o **build**, não a carga do
-  módulo, o firmware GSP nem o modeset
-- O módulo `desktop/` inteiro
+- Runtime do NVIDIA na Blackwell — **carregou uma vez** (2026-09-02, bare
+  metal), nunca reexecutado
+- Etapa 16 (Clavis Shell) — escrita, **nunca executada**
 - Segunda instalação limpa com o código atual, sem intervenção
 - Branch `INIT_SYSTEM=systemd`
 

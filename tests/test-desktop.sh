@@ -1374,4 +1374,70 @@ else
        "arquivo presente nao prova que o fontconfig o enxerga (cache, diretorio, truncamento)"
 fi
 
+# --- achados da revisao geral de 2026-09-03 --------------------------------
+printf '\n  -- revisao geral --\n'
+
+# ALTA: o vars-desktop.sh e sourceado como ROOT, entao $HOME vale /root. Um
+# default de caminho montado la aponta para fora do home do usuario, e o build
+# (que roda via run_as_user) nao consegue escrever.
+if grep -qE '^\s*: "\$\{DESKTOP_CLAVIS(_KEYTOP)?_SRC:=\$\{HOME' "$VARS_D"; then
+    no "o caminho de checkout do Clavis usa \$HOME no vars-desktop.sh" \
+       "o arquivo e lido como root: \$HOME=/root e o run_as_user nao escreve la"
+else
+    ok "o checkout do Clavis nao deriva de \$HOME no vars-desktop.sh"
+fi
+if grep -qE 'CLAVIS_SRC="\$\{DESKTOP_CLAVIS_SRC:-\$\(user_home\)' "$DESKTOP_DIR/16-clavis.sh"; then
+    ok "o checkout resolve por user_home() em runtime (home REAL, do getent)"
+else
+    no "o checkout nao usa user_home()" "adivinhar caminho de home e proibido pelas regras do modulo"
+fi
+
+# ALTA: cmake e ninja mudaram de categoria (dev-util -> dev-build). Um atom
+# inexistente mata o emerge da etapa inteira.
+if grep -qE 'dev-util/(cmake|ninja)' "$DESKTOP_DIR/16-clavis.sh"; then
+    no "16-clavis usa dev-util/cmake ou dev-util/ninja" \
+       "as duas foram movidas para dev-build/; o atom nao existe e o emerge morre"
+else
+    ok "cmake e ninja com a categoria correta (dev-build/)"
+fi
+
+# MEDIA: probe nao pode exigir o que o do_fn trata como nao-fatal, senao o
+# run_step mata a etapa depois de compilar tudo.
+# Comentarios fora antes do grep: o comentario da propria funcao explica que a
+# material-symbols fica FORA do predicado, e cita o nome. Setima ocorrencia do
+# bug recorrente numero 1 deste projeto — o teste casando com a documentacao
+# dele mesmo.
+pcf="$(extract_fn "$DESKTOP_DIR/16-clavis.sh" probe_clavis_fonts \
+       | sed -e 's/[[:space:]]#.*$//' -e 's/^[[:space:]]*#.*$//')"
+if grep -q 'material-symbols' <<< "$pcf"; then
+    no "probe_clavis_fonts exige a material-symbols" \
+       "a falha dela e nao-fatal no do_fn; exigi-la aqui derruba a etapa 16 inteira"
+else
+    ok "probe_clavis_fonts nao exige a fonte cuja falha e tratada como nao-fatal"
+fi
+
+# MEDIA: um die dentro de $( ) mata so a subshell — o probe viraria um
+# 'nao-feito' silencioso em vez de abortar com a causa.
+if grep -qE 'desired="\$\(_managed_header[^)]*\)" \|\| return 1' "$DESKTOP_DIR/16-clavis.sh"; then
+    no "probe do 16 traduz falha de validacao em 'nao-feito'" \
+       "o die dentro de \$( ) mata so a subshell; a causa se perde"
+else
+    ok "falha de validacao dentro de \$( ) e convertida em die, nao em 'nao-feito'"
+fi
+
+# MEDIA: o unico passo que depende de rede nao pode descartar a causa.
+if grep -qE 'ebuild "\$eb" manifest > /dev/null' "$DESKTOP_DIR/16-clavis.sh"; then
+    no "a saida do 'ebuild ... manifest' vai para /dev/null" \
+       "e o unico passo com rede: sem a causa (404, proxy, digest) nao ha diagnostico"
+else
+    ok "o 'ebuild ... manifest' registra a causa no log"
+fi
+
+# O README do modulo tem de conhecer a etapa 16.
+if grep -qi 'clavis' "$DESKTOP_DIR/README.md"; then
+    ok "desktop/README.md documenta a etapa 16"
+else
+    no "desktop/README.md nao menciona o Clavis" "descreve um fluxo que termina na 14"
+fi
+
 finish

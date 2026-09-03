@@ -54,7 +54,16 @@ dry_run_guard 16-clavis-keywords 16-clavis-use 16-clavis-deps \
               16-clavis-build 16-key-cli 16-keytop 16-clavis-fonts \
               16-clavis-autostart
 
-CLAVIS_SRC="$DESKTOP_CLAVIS_SRC"
+# Resolvido AQUI, e nao no vars-desktop.sh, por um motivo concreto: aquele
+# arquivo e sourceado como ROOT (require_root, acima), entao $HOME vale /root e
+# um default montado la produziria /root/src/clavis-shell. O build roda via
+# run_as_user, que nao escreve em /root (0700) — a etapa morreria no mkdir.
+#
+# user_home() le o home REAL do getent; o comentario dela proibe literalmente
+# montar "/home/$user". Havia duas resolucoes do mesmo caminho neste modulo, e
+# a manual estava quebrada — padrao recorrente deste projeto.
+CLAVIS_SRC="${DESKTOP_CLAVIS_SRC:-$(user_home)/src/clavis-shell}"
+KEYTOP_SRC="${DESKTOP_CLAVIS_KEYTOP_SRC:-$(user_home)/src/clavis-keytop}"
 CLAVIS_BUILD="$CLAVIS_SRC/build"
 KEY_VENV="$DESKTOP_CLAVIS_KEY_VENV"
 KEY_BIN="/usr/local/bin/key"
@@ -87,7 +96,8 @@ gen_clavis_keywords() {
 probe_clavis_keywords() {
     [[ -f "$KEYWORDS_FILE" ]] || return 1
     local desired
-    desired="$(_managed_header "16-clavis.sh"; gen_clavis_keywords)" || return 1
+    desired="$(_managed_header "16-clavis.sh"; gen_clavis_keywords)" \
+        || die "gen_clavis_keywords falhou ao validar contra a arvore do Portage (a causa esta na mensagem acima). Um die dentro de substituicao de comando mata so a subshell, entao sem este guarda a falha viraria um probe reprovando em silencio."
     [[ "$(cat "$KEYWORDS_FILE")" == "$desired" ]]
 }
 
@@ -145,6 +155,10 @@ gen_clavis_use() {
 # arquivo dela; a validacao em si mora no lib-desktop.sh e e compartilhada.
 _use_line_clavis() {
     local atom="$1"; shift
+    # Atom invisivel produz mensagem que culpa o IUSE por um flag que existe —
+    # a causa real seria keyword faltando. Separar os dois casos.
+    have_atom "$atom" > /dev/null 2>&1 \
+        || die "o atom '$atom' nao e visivel para o Portage. Isto quase sempre e keyword faltando, nao USE flag: confira /etc/portage/package.accept_keywords/clavis e se a GURU esta habilitada (etapa 10). Diagnostico: portageq best_visible / $atom"
     local flag bare
     for flag in "$@"; do
         bare="${flag#-}"
@@ -157,7 +171,8 @@ _use_line_clavis() {
 probe_clavis_use() {
     [[ -f "$PKGUSE_FILE" ]] || return 1
     local desired
-    desired="$(_managed_header "16-clavis.sh"; gen_clavis_use)" || return 1
+    desired="$(_managed_header "16-clavis.sh"; gen_clavis_use)" \
+        || die "gen_clavis_use falhou ao validar contra a arvore do Portage (a causa esta na mensagem acima). Um die dentro de substituicao de comando mata so a subshell, entao sem este guarda a falha viraria um probe reprovando em silencio."
     [[ "$(cat "$PKGUSE_FILE")" == "$desired" ]]
 }
 
@@ -195,7 +210,7 @@ CLAVIS_DEPS=(
     dev-qt/qttools:6
     media-video/pipewire
     dev-vcs/git
-    dev-util/cmake
+    dev-build/cmake
     dev-build/ninja
     dev-python/pip
 )
@@ -295,9 +310,6 @@ probe_clavis_build() {
 }
 
 do_clavis_build() {
-
-    local home
-    home="$(user_home)"
 
     # O checkout vive no HOME do usuario e pertence a ele: e ele quem compila.
     if [[ ! -d "$CLAVIS_SRC/.git" ]]; then
@@ -445,7 +457,7 @@ do_keytop() {
         return 0
     fi
 
-    local src="$DESKTOP_CLAVIS_KEYTOP_SRC" build
+    local src="$KEYTOP_SRC" build
     build="$src/build"
 
     # Todo o bloco e nao-fatal: cada passo que falhar cai no aviso e grava o
@@ -596,9 +608,13 @@ probe_clavis_fonts() {
     [[ "$DESKTOP_CLAVIS_FONTS" == "yes" ]] || return 0
     # fc-list e a autoridade sobre fonte instalada: o arquivo existir nao prova
     # que o fontconfig o enxerga (cache velho, diretorio errado, truncamento).
-    run_as_user fc-list 2>/dev/null | grep -qi 'Material Symbols Rounded' || return 1
+    # As DUAS empacotadas apenas. A material-symbols fica FORA do predicado de
+    # proposito: o do_fn trata a falha dela como nao-fatal (sem rede, o
+    # 'ebuild ... manifest' nao roda), e exigi-la aqui faria o run_step matar a
+    # etapa 16 — depois de compilar o Qt inteiro — por uma fonte que o proprio
+    # codigo declara cosmetica. O aviso do do_fn e o canal certo.
     local pkg
-    for pkg in "${CLAVIS_FONT_PKGS[@]}"; do
+    for pkg in media-fonts/nerdfonts media-fonts/lxgw-wenkai; do
         pkg_installed "$pkg" || return 1
     done
 }
@@ -626,7 +642,10 @@ _install_overlay() {
     local eb
     eb="$(find "$OVERLAY_DEST/media-fonts/material-symbols" -name '*.ebuild' -print -quit)"
     [[ -n "$eb" ]] || die "nenhum ebuild encontrado em '$OVERLAY_DEST/media-fonts/material-symbols'."
-    ebuild "$eb" manifest > /dev/null 2>&1
+    # A saida vai para o LOG, nunca para /dev/null: este e o unico passo da
+    # etapa que depende de rede, e quando ele falha a causa (404, proxy, digest)
+    # e a unica informacao util que existe.
+    ebuild "$eb" manifest >> "$LOGFILE" 2>&1
 }
 
 do_clavis_fonts() {

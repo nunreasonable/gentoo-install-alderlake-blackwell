@@ -857,9 +857,10 @@ detectou o local do `/boot`, e a causa esta antes.
 
 ### `ROOT_FS` precisa estar no ambiente em TODA execucao
 
-O `vars.sh` tem `: "${ROOT_FS:=ext4}"`. Quem instala com `ROOT_FS=btrfs` na
-linha de comando e depois **retoma** com um `./install.sh` pelado esta
-declarando `ext4` sem perceber. O probe do `00-mkfs-root` compara o tipo real
+O `vars.sh` tem `: "${ROOT_FS:=btrfs}"` (era `ext4` ate 2026-09-02). O perigo
+esta **invertido** em relacao a versao antiga deste texto: hoje quem instalou em
+**ext4** e retoma com um `./install.sh` pelado esta declarando `btrfs` sem
+perceber. O probe do `00-mkfs-root` compara o tipo real
 com o declarado, ve divergencia, e conclui que falta formatar a raiz — de uma
 instalacao pronta.
 
@@ -874,9 +875,11 @@ hoje diagnostica isso antes (`_assert_root_fs_not_forgotten`) e imprime o
 comando certo, mas a regra continua valendo:
 
 ```sh
-ROOT_FS=btrfs ./install.sh          # retomar
-ROOT_FS=btrfs ./tests/run-in-qemu-guest.sh
+ROOT_FS=ext4 ./install.sh           # retomar uma instalacao ext4
+ROOT_FS=ext4 ./tests/run-in-qemu-guest.sh
 ```
+
+Quem instalou em btrfs — o default — nao precisa de variavel nenhuma.
 
 O perfil da VM **nao** define `ROOT_FS`, de proposito — ele fixa so o que e
 especifico da VM (`TARGET_DISK=/dev/vda`).

@@ -231,6 +231,7 @@ Roda, nesta ordem: **10 -> 11 -> 12 -> 13 -> 15 -> 14**.
 | 12 | `12-niri-stack.sh` | niri, terminal, launcher, xwayland, barra, portais, audio |
 | 13 | `13-services.sh` | seatd/dbus, grupos, PAM, `XDG_RUNTIME_DIR`, servicos de audio |
 | 15 | `15-validate.sh` | **validacao pre-reboot** — portao |
+| 16 | `16-clavis.sh` | **Clavis Shell** (padrao): quickshell + key-cli + keytop + fontes |
 | 14 | `14-dotfiles.sh` | dotfiles e aparencia |
 
 **A ordem nao e numerica, e isso e deliberado:**
@@ -292,7 +293,7 @@ servico e habilitado.
 > **Correcao de documentacao (2026-09-02).** Uma versao anterior deste README
 > dizia que a flag **nao era enforcada** e mandava nao confiar nela. Isso
 > descrevia um estado antigo — os guards foram adicionados depois daquele texto,
-> e o README nao acompanhou. A auditoria confirmou que os sete numerados
+> e o README nao acompanhou. A auditoria confirmou que os oito numerados
 > consomem a variavel; o `10a`, que era a excecao (usava `die` no meio em vez do
 > guard no topo, saindo com codigo != 0 e abortando a cadeia), foi alinhado.
 
@@ -610,7 +611,9 @@ do projeto.
 | `13-services.sh` | servicos, grupos, PAM, `XDG_RUNTIME_DIR` |
 | `14-dotfiles.sh` | dotfiles e aparencia |
 | `15-validate.sh` | validacao pre-reboot (portao) |
-| `../tests/test-desktop.sh` | 253 asercoes estaticas sobre este modulo |
+| `16-clavis.sh` | Clavis Shell: compila do git, venv do key-cli, overlay local de fonte |
+| `overlay/` | overlay LOCAL com `media-fonts/material-symbols` (nao existe no Portage) |
+| `../tests/test-desktop.sh` | 393 asercoes estaticas sobre este modulo |
 
 ### A armadilha central do `lib-desktop.sh`
 
@@ -636,7 +639,7 @@ nao-vazio e valida disco/particoes irrelevantes aqui).
 
 ## Resumo honesto
 
-Este modulo foi escrito com cuidado, tem 253 asercoes estaticas, falha cedo com
+Este modulo foi escrito com cuidado, tem 393 asercoes estaticas, falha cedo com
 mensagens acionaveis e recusa rodar na fase errada. **Nada disso e o mesmo que
 funcionar.**
 

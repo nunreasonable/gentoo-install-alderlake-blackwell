@@ -648,7 +648,7 @@ audit_clavis_migration() {
     fi
 
     if run_as_user grep -qF 'spawn "fuzzel"' "$NIRI_CONFIG" 2>/dev/null \
-       && ! run_as_user grep -qF 'spotlight' "$NIRI_CONFIG" 2>/dev/null; then
+       && ! run_as_user grep -qF 'spawn "key" "ipc" "call" "spotlight"' "$NIRI_CONFIG" 2>/dev/null; then
         log_warn "MIGRACAO: o Mod+D de '$NIRI_CONFIG' ainda chama o fuzzel direto, nao o spotlight do Clavis. Nada quebra — o fuzzel continua instalado de proposito — mas voce nao tem o launcher do Clavis. Para trocar, substitua o bind por:"
         log_warn "    Mod+D { spawn \"key\" \"ipc\" \"call\" \"spotlight\" \"toggle\"; }"
         achou="sim"
