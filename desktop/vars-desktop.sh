@@ -567,7 +567,13 @@ unset _DESKTOP_BAR_SET _DESKTOP_NOTIFY_SET
 #                             e opsz) — fallback estatico nao reproduz. Sem
 #                             ela, praticamente todo icone da barra, do tray,
 #                             dos quick settings e das sidebars vira tofu.
-#                             E o unico download fora do Portage deste projeto.
+#                             Empacotada por um EBUILD LOCAL, em
+#                             desktop/overlay/, instalado em
+#                             /var/db/repos/gentoo-install-local. Assim ela e
+#                             rastreada pelo Portage como qualquer outra coisa:
+#                             `emerge --unmerge` funciona, o qfile a enxerga, e
+#                             o projeto deixa de ter excecao a regra "tudo pelo
+#                             gerenciador de pacotes".
 #
 #   JetBrainsMono Nerd Font   media-fonts/nerdfonts[jetbrainsmono] (GURU) da
 #                             exatamente essa familia.
@@ -581,4 +587,3 @@ unset _DESKTOP_BAR_SET _DESKTOP_NOTIFY_SET
 # a falta de fonte no Clavis nunca gera erro, so icone ausente, que e
 # justamente por que vale avisar.
 : "${DESKTOP_CLAVIS_FONTS:=yes}"
-: "${DESKTOP_CLAVIS_SYMBOLS_URL:=https://github.com/google/material-design-icons/raw/master/variablefont/MaterialSymbolsRounded%5BFILL%2CGRAD%2Copsz%2Cwght%5D.ttf}"

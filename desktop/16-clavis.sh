@@ -566,24 +566,67 @@ do_clavis_autostart() {
 # melhor que abortar a instalacao por causa de um download que pode falhar por
 # falta de rede. Por isso todo o bloco avisa em vez de morrer.
 CLAVIS_FONT_PKGS=(
-    media-fonts/nerdfonts   # [jetbrainsmono] da "JetBrainsMono Nerd Font"
-    media-fonts/lxgw-wenkai # familia base; a variante "GB Screen" nao e empacotada
+    media-fonts/nerdfonts       # [jetbrainsmono] da "JetBrainsMono Nerd Font"
+    media-fonts/lxgw-wenkai     # familia base; a variante "GB Screen" nao e empacotada
+    media-fonts/material-symbols  # do overlay LOCAL, criado logo abaixo
 )
-CLAVIS_SYMBOLS_TTF_NAME='MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf'
 
-clavis_symbols_path() {
-    printf '%s/.local/share/fonts/%s\n' "$(user_home)" "$CLAVIS_SYMBOLS_TTF_NAME"
+# O overlay local existe por um motivo unico: a Material Symbols nao esta em
+# ::gentoo nem na GURU, e sem ele ela seria o unico artefato do projeto
+# instalado fora do Portage — sem rastreio, sem `emerge --unmerge`, invisivel
+# ao `qfile`. Um ebuild de 40 linhas resolve isso e mantem a regra "tudo pelo
+# Portage" sem excecao.
+OVERLAY_NAME=gentoo-install-local
+OVERLAY_DEST="/var/db/repos/$OVERLAY_NAME"
+OVERLAY_SRC="$SCRIPT_DIR/overlay"
+OVERLAY_CONF="/etc/portage/repos.conf/${OVERLAY_NAME}.conf"
+
+gen_overlay_conf() {
+    printf '%s\n' "[$OVERLAY_NAME]"
+    printf '%s\n' "location = $OVERLAY_DEST"
+    printf '%s\n' "masters = gentoo"
+    printf '%s\n' "priority = 50"
+    # auto-sync = no e o ponto: o conteudo vem do repositorio do instalador,
+    # nao da rede. Um `emerge --sync` nao pode tentar buscar isto de lugar
+    # nenhum e nao pode falhar por causa disso.
+    printf '%s\n' "auto-sync = no"
 }
 
 probe_clavis_fonts() {
     [[ "$DESKTOP_CLAVIS_FONTS" == "yes" ]] || return 0
-    # fc-list e a autoridade: o arquivo existir nao prova que o fontconfig o
-    # enxerga (cache desatualizado, diretorio errado, arquivo truncado).
+    # fc-list e a autoridade sobre fonte instalada: o arquivo existir nao prova
+    # que o fontconfig o enxerga (cache velho, diretorio errado, truncamento).
     run_as_user fc-list 2>/dev/null | grep -qi 'Material Symbols Rounded' || return 1
     local pkg
     for pkg in "${CLAVIS_FONT_PKGS[@]}"; do
         pkg_installed "$pkg" || return 1
     done
+}
+
+# Instala o overlay e gera o Manifest NA MAQUINA. O Manifest nao pode ser
+# versionado no repositorio: ele carrega os hashes do arquivo baixado, e
+# gera-lo aqui exigiria ter o Portage e baixar 15 MB so para commitar um hash
+# que o proprio `ebuild ... manifest` recalcula.
+_install_overlay() {
+    [[ -d "$OVERLAY_SRC" ]] \
+        || die "o overlay local nao foi encontrado em '$OVERLAY_SRC' — o repositorio do instalador esta incompleto."
+
+    mkdir -p "$(dirname "$OVERLAY_DEST")" || die "nao foi possivel criar $(dirname "$OVERLAY_DEST")."
+    # -a preserva modo e tempos; --delete NAO e usado de proposito: o diretorio
+    # de destino recebe tambem os Manifests e o distfile-cache do Portage, e
+    # apaga-los a cada execucao forcaria novo download.
+    cp -a "$OVERLAY_SRC/." "$OVERLAY_DEST/" \
+        || die "falha ao copiar o overlay local para '$OVERLAY_DEST'."
+
+    write_managed_file "$OVERLAY_CONF" "$(gen_overlay_conf)" "16-clavis.sh"
+
+    # `ebuild ... manifest` BAIXA o arquivo para calcular os hashes. E o unico
+    # passo daqui que precisa de rede, e por isso e o unico que pode falhar por
+    # motivo alheio ao sistema.
+    local eb
+    eb="$(find "$OVERLAY_DEST/media-fonts/material-symbols" -name '*.ebuild' -print -quit)"
+    [[ -n "$eb" ]] || die "nenhum ebuild encontrado em '$OVERLAY_DEST/media-fonts/material-symbols'."
+    ebuild "$eb" manifest > /dev/null 2>&1
 }
 
 do_clavis_fonts() {
@@ -599,50 +642,36 @@ do_clavis_fonts() {
                           "$(_use_line_clavis media-fonts/nerdfonts jetbrainsmono)")" \
         "16-clavis.sh"
 
-    emerge --noreplace "${CLAVIS_FONT_PKGS[@]}" \
-        || log_warn "falha ao instalar as fontes empacotadas (${CLAVIS_FONT_PKGS[*]}). O Clavis sobe assim mesmo, com fallback do Qt para as monoespacadas e CJK. Log: $LOGFILE"
+    write_managed_file /etc/portage/package.accept_keywords/clavis-fonts \
+        "$(printf '%s\n' "# O overlay local e a GURU sao ~arch por natureza." \
+                          "media-fonts/material-symbols ~amd64" \
+                          "media-fonts/nerdfonts ~amd64" \
+                          "media-fonts/lxgw-wenkai ~amd64")" \
+        "16-clavis.sh"
 
-    local dest tmp
-    dest="$(clavis_symbols_path)"
-    if run_as_user fc-list 2>/dev/null | grep -qi 'Material Symbols Rounded'; then
-        log_info "Material Symbols Rounded ja esta instalada e visivel ao fontconfig"
+    # NADA NESTE BLOCO E FATAL, e a razao e proporcionalidade: a falta de fonte
+    # no Clavis nunca gera erro — o resolveFamily() dele sempre devolve algo.
+    # O pior desfecho e icone ausente. Abortar uma instalacao inteira por isso,
+    # depois de compilar Qt e o shell, seria desproporcional.
+    local -a pkgs=("${CLAVIS_FONT_PKGS[@]}")
+    if _install_overlay; then
+        log_info "overlay local '$OVERLAY_NAME' instalado em '$OVERLAY_DEST' com Manifest gerado"
     else
-        if ! run_as_user mkdir -p "$(dirname "$dest")"; then
-            log_warn "nao foi possivel criar o diretorio de fontes de '$DESKTOP_USER' — a Material Symbols nao sera instalada e os icones do Clavis ficarao ausentes."
-            return 0
-        fi
-
-        # Baixa para um temporario e so promove depois de verificar: um TTF
-        # truncado por queda de rede fica no lugar do bom, o fontconfig o
-        # ignora, e o sintoma (icones ausentes) e identico ao de nao ter
-        # baixado nada — mas o probe passaria a mentir que baixou.
-        tmp="${dest}.parcial"
-        if run_as_user curl -fsSL --retry 2 -o "$tmp" "$DESKTOP_CLAVIS_SYMBOLS_URL"; then
-            # A fonte tem ~15 MB; qualquer coisa muito menor e pagina de erro
-            # ou download interrompido.
-            local sz
-            sz="$(stat -c %s "$tmp" 2>/dev/null || echo 0)"
-            if (( sz > 1000000 )) && head -c4 "$tmp" | grep -qa $'\x00\x01\x00\x00'; then
-                if run_as_user mv -f "$tmp" "$dest"; then
-                    log_info "Material Symbols Rounded instalada em '$dest' ($sz bytes)"
-                else
-                    # Aviso e nao die, pelo mesmo motivo do resto do bloco:
-                    # nenhuma fonte vale abortar uma instalacao. O pior desfecho
-                    # aqui e icone ausente.
-                    log_warn "o download da fonte deu certo mas nao foi possivel move-la para '$dest'. Confira permissoes do diretorio de fontes de '$DESKTOP_USER'."
-                fi
-            else
-                run_as_user rm -f "$tmp" || true
-                log_warn "o download da Material Symbols Rounded veio invalido ($sz bytes, sem assinatura TTF) — provavelmente uma pagina de erro. Os icones do Clavis ficarao ausentes. Baixe a mao de $DESKTOP_CLAVIS_SYMBOLS_URL para '$dest'."
-            fi
-        else
-            run_as_user rm -f "$tmp" 2>/dev/null || true
-            log_warn "nao foi possivel baixar a Material Symbols Rounded (sem rede?). O Clavis sobe, mas os icones da barra, do tray e das sidebars ficarao ausentes. Baixe depois de $DESKTOP_CLAVIS_SYMBOLS_URL para '$dest' e rode: fc-cache -f"
-        fi
+        log_warn "nao foi possivel preparar o overlay local (o 'ebuild ... manifest' precisa de rede para baixar a fonte e calcular o hash). A Material Symbols NAO sera instalada e os icones do Clavis ficarao ausentes. Depois, com rede: ./desktop/install-desktop.sh --only 16"
+        # Sai da lista para o emerge das outras duas ainda acontecer: sem
+        # Manifest o Portage recusaria o atom e derrubaria o emerge inteiro.
+        pkgs=(media-fonts/nerdfonts media-fonts/lxgw-wenkai)
     fi
+
+    emerge --noreplace "${pkgs[@]}" \
+        || log_warn "falha ao instalar fontes (${pkgs[*]}). O Clavis sobe assim mesmo, com fallback do Qt. Log: $LOGFILE"
 
     run_as_user fc-cache -f > /dev/null 2>&1 \
         || log_warn "'fc-cache -f' falhou como '$DESKTOP_USER'; as fontes novas so aparecerao no proximo login."
+
+    if ! run_as_user fc-list 2>/dev/null | grep -qi 'Material Symbols Rounded'; then
+        log_warn "a Material Symbols Rounded NAO aparece no fc-list de '$DESKTOP_USER'. O Clavis vai subir com tofu no lugar dos icones da barra, do tray e das sidebars. Diagnostico: emerge -pv media-fonts/material-symbols"
+    fi
 }
 
 run_step 16-clavis-fonts probe_clavis_fonts do_clavis_fonts

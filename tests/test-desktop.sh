@@ -1297,29 +1297,73 @@ if [[ -z "$cf" ]]; then
     no "16-clavis nao instala as fontes do Clavis"
 else
     ok "16-clavis tem sub-etapa de fontes"
-    if grep -q 'MaterialSymbols' <<< "$(cat "$VARS_D")"; then
-        ok "a URL da Material Symbols e configuravel em vars-desktop.sh"
+    # A fonte agora vem de um EBUILD LOCAL, nao de curl. Isso tira a unica
+    # excecao a regra "tudo pelo Portage" que o projeto tinha.
+    if grep -qE '\bcurl\b|\bwget\b' <<< "$cf"; then
+        no "16-clavis ainda baixa fonte por fora do Portage" \
+           "o overlay local existe justamente para nao precisar disso"
     else
-        no "a URL da Material Symbols esta embutida no script"
+        ok "a fonte vem do Portage (overlay local), sem download direto"
     fi
-    # Download fora do Portage nunca pode abortar a instalacao: a falta de
-    # fonte no Clavis nao gera erro, so icone ausente.
-    # Comentarios removidos antes do grep: o proprio comentario que explica
-    # "aviso e nao die" contem a palavra. E o bug recorrente numero 1 daqui —
-    # o teste casar com a documentacao dele mesmo.
-    curl_block="$(sed -n '/curl/,/^    fi/p' <<< "$cf" | sed -e 's/[[:space:]]#.*$//' -e 's/^[[:space:]]*#.*$//')"
-    if grep -qE '\bdie\b' <<< "$curl_block"; then
-        no "a falha de download de fonte pode abortar a etapa" \
-           "sem rede, a instalacao inteira morreria por um problema cosmetico"
+    if grep -q 'ebuild .* manifest' <<< "$cf"; then
+        ok "o Manifest e gerado NA MAQUINA (nao pode ser versionado: carrega hash do distfile)"
     else
-        ok "falha ao baixar fonte avisa, nunca aborta"
+        no "o overlay e instalado sem gerar Manifest" \
+           "com use-manifests=strict o Portage recusa o atom e derruba o emerge inteiro"
     fi
-    # Promocao so depois de verificar: um TTF truncado no lugar do bom faz o
-    # probe mentir, com sintoma identico ao de nao ter baixado.
-    if grep -q 'parcial' <<< "$cf"; then
-        ok "o download vai para um temporario e so e promovido depois de verificado"
+    # Sem Manifest, o atom da fonte tem de SAIR da lista — senao o emerge das
+    # outras duas morre junto por causa dele.
+    if grep -qE 'pkgs=\(media-fonts/nerdfonts media-fonts/lxgw-wenkai\)' <<< "$cf"; then
+        ok "falha do overlay remove so a fonte da lista; as outras ainda instalam"
     else
-        no "o download escreve direto no destino" "um arquivo truncado ficaria no lugar do bom"
+        no "falha do overlay derruba o emerge das outras fontes tambem"
+    fi
+
+    # --- o ebuild em si ---
+    EB="$DESKTOP_DIR/overlay/media-fonts/material-symbols"
+    eb_file="$(find "$EB" -name '*.ebuild' 2>/dev/null | head -1)"
+    if [[ -z "$eb_file" ]]; then
+        no "nao ha ebuild da material-symbols no overlay local"
+    else
+        ok "o overlay local tem o ebuild da material-symbols"
+        for campo in 'EAPI=8' 'inherit font' 'SLOT=' 'KEYWORDS=' 'LICENSE='; do
+            grep -q "$campo" "$eb_file" \
+                && ok "o ebuild declara $campo" \
+                || no "o ebuild nao declara $campo"
+        done
+        # SRC_URI fixo num COMMIT: 'master' faria o hash do Manifest divergir
+        # do arquivo assim que o upstream mexesse na fonte, e o emerge passaria
+        # a falhar com erro de digest — sintoma que nao aponta para a causa.
+        # Duas metades: o SRC_URI interpola ${MY_COMMIT}, e MY_COMMIT e um SHA
+        # completo. Verificar so a URL daria falso negativo pela interpolacao;
+        # verificar so a variavel nao provaria que ela e usada.
+        if grep -qE '^MY_COMMIT="[0-9a-f]{40}"' "$eb_file" \
+           && grep -qE 'SRC_URI=.*material-design-icons/\$\{MY_COMMIT\}/' "$eb_file"; then
+            ok "SRC_URI fixa um commit de 40 caracteres (o Manifest nao pode divergir)"
+        elif grep -qE 'SRC_URI=.*/(master|main)/' "$eb_file"; then
+            no "SRC_URI aponta para um branch movel" \
+               "o upstream mexer na fonte quebraria o digest do Manifest, com erro que nao aponta a causa"
+        else
+            no "nao foi possivel confirmar que o SRC_URI fixa um commit"
+        fi
+        # O .ttf nao e tarball: o unpack default do Portage morre nele.
+        if grep -q 'src_unpack()' "$eb_file"; then
+            ok "o ebuild tem src_unpack proprio (o SRC_URI e um .ttf, nao um tarball)"
+        else
+            no "o ebuild usa o src_unpack default" "o Portage morre ao nao reconhecer a extensao .ttf"
+        fi
+    fi
+    # O repos.conf nao pode tentar sincronizar: o conteudo vem do instalador.
+    goc="$(extract_fn "$DESKTOP_DIR/16-clavis.sh" gen_overlay_conf)"
+    if grep -q 'auto-sync = no' <<< "$goc"; then
+        ok "o overlay local e auto-sync = no (o conteudo vem do repositorio, nao da rede)"
+    else
+        no "o overlay local nao desliga o auto-sync" "um 'emerge --sync' tentaria buscar de lugar nenhum e falharia"
+    fi
+    if grep -q 'masters = gentoo' <<< "$goc"; then
+        ok "o overlay declara masters = gentoo (herda eclasses como font.eclass)"
+    else
+        no "o overlay nao declara masters" "sem isso o 'inherit font' nao resolve"
     fi
 fi
 pf="$(extract_fn "$DESKTOP_DIR/16-clavis.sh" probe_clavis_fonts)"
