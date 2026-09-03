@@ -1141,4 +1141,134 @@ for fn in step_script step_desc; do
     fi
 done
 
+# ===========================================================================
+# Clavis como shell PADRAO — derivacao, binds e resgate
+# ===========================================================================
+# A revisao adversarial desta mudanca produziu tres achados que so um teste
+# impede de voltar: a derivacao ignorar o override do operador, o gate da 15
+# por marker (que o run_step grava mesmo sem o do_fn rodar) e o bind gerado
+# para um binario inexistente.
+printf '\n  -- Clavis como padrao --\n'
+
+VARS_D="$DESKTOP_DIR/vars-desktop.sh"
+
+# --- matriz de derivacao, FUNCIONAL (o arquivo e sourced de verdade) -------
+derive() {
+    env -i PATH="$PATH" HOME=/tmp USERNAME=x $1 \
+        bash -c 'source "$0" 2>/dev/null; printf "%s|%s|%s|%s" "$DESKTOP_CLAVIS" "$DESKTOP_BAR" "$DESKTOP_NOTIFY" "$DESKTOP_LAUNCHER"' "$VARS_D"
+}
+assert_eq "yes|none|none|fuzzel" "$(derive '')" \
+    "default: Clavis ligado, barra e notify derivados para none, fuzzel MANTIDO"
+assert_eq "no|waybar|mako|fuzzel" "$(derive 'DESKTOP_CLAVIS=no')" \
+    "DESKTOP_CLAVIS=no restaura o caminho antigo por inteiro"
+assert_eq "yes|waybar|none|fuzzel" "$(derive 'DESKTOP_BAR=waybar')" \
+    "escolha explicita do operador VENCE a derivacao"
+assert_eq "yes|none|mako|fuzzel" "$(derive 'DESKTOP_NOTIFY=mako')" \
+    "override explicito tambem vale para o notify (mesmo sendo ma ideia)"
+
+# A sentinela tem de ser gravada ANTES do primeiro ':=' das variaveis que ela
+# observa — depois dele, ${VAR+x} esta sempre setado e a derivacao ou nunca
+# dispara, ou dispara sempre ignorando o operador.
+ln_sent="$(grep -n '_DESKTOP_BAR_SET=' "$VARS_D" | head -1 | cut -d: -f1)"
+ln_assign="$(grep -n '"\${DESKTOP_BAR:=' "$VARS_D" | head -1 | cut -d: -f1)"
+if [[ -n "$ln_sent" && -n "$ln_assign" ]] && (( ln_sent < ln_assign )); then
+    ok "a sentinela de DESKTOP_BAR e gravada antes do ':=' (a ordem e load-bearing)"
+else
+    no "sentinela depois do ':=' (sentinela=$ln_sent assign=$ln_assign)" \
+       "o ':=' atribui a variavel; depois dele nao ha como saber se o operador opinou"
+fi
+
+# --- o fuzzel e rede de seguranca, nao sobra ------------------------------
+# Ele nao e daemon e nao disputa nome no D-Bus — o argumento que obriga o mako
+# a sair nao se aplica a ele. Manter da uma rota grafica que nao compartilha
+# ponto de falha nenhum com o Clavis.
+if grep -qE 'DESKTOP_LAUNCHER=none' "$VARS_D"; then
+    no "a derivacao desliga o DESKTOP_LAUNCHER" \
+       "o fuzzel e a unica rota grafica independente do Clavis; sem ele, shell morto = nada abre"
+else
+    ok "a derivacao NAO desliga o launcher (fuzzel fica como resgate)"
+fi
+
+lb="$(extract_fn "$DESKTOP_DIR/14-dotfiles.sh" niri_binds_launcher)"
+if [[ -z "$lb" ]]; then
+    no "14-dotfiles nao tem niri_binds_launcher"
+else
+    ok "14-dotfiles gera os binds de launcher por funcao dedicada"
+    # O comando de IPC e literal do upstream (AppShell.qml), nao inventado.
+    if grep -qE '"key" "ipc" "call" "spotlight" "toggle"' <<< "$lb"; then
+        ok "Mod+D chama o spotlight do Clavis por IPC"
+    else
+        no "o bind do spotlight nao usa o comando de IPC do upstream"
+    fi
+    if grep -q 'Mod+Shift+Space' <<< "$lb" && grep -q 'spawn "fuzzel"' <<< "$lb"; then
+        ok "existe bind de RESGATE para o fuzzel, independente do Clavis"
+    else
+        no "nao ha bind de resgate" "com o Clavis morto, o Mod+D nao faz nada e nao sobra rota grafica"
+    fi
+    # BUG REAL corrigido: DESKTOP_LAUNCHER=none gerava `spawn "none"`.
+    if grep -qE 'spawn "\$DESKTOP_LAUNCHER"' <<< "$lb" \
+       && ! grep -q 'DESKTOP_LAUNCHER" == "none"' <<< "$lb"; then
+        no "o bind de launcher volta a gerar spawn com valor nao guardado" \
+           "com DESKTOP_LAUNCHER=none o config.kdl saia com spawn \"none\""
+    else
+        ok "o valor 'none' do launcher e guardado (nao gera mais spawn \"none\")"
+    fi
+fi
+
+# --- o gate da 15 nao pode ser por marker ---------------------------------
+# run_step grava o marker quando o PROBE passa, mesmo sem o do_fn rodar, e
+# mark_done sem valor grava a string 'done'. step_value nunca falha (|| true),
+# entao usa-lo direto num `if` e sempre verdadeiro.
+v15="$DESKTOP_DIR/15-validate.sh"
+if grep -qE 'if[^\n]*step_(done|value) 16-clavis' "$v15"; then
+    no "15-validate condiciona os checks do Clavis a um MARKER" \
+       "o run_step grava o marker sem o do_fn rodar; use o artefato no disco"
+else
+    ok "15-validate nao usa marker como gate do Clavis"
+fi
+if grep -q '/etc/xdg/quickshell/clavis/shell.qml' "$v15"; then
+    ok "15-validate usa o artefato no disco como prova de instalacao"
+else
+    no "15-validate nao verifica o shell.qml instalado"
+fi
+# A 15 roda ANTES da 16: Clavis ausente tem de ser AVISO, nunca FALHA, senao a
+# instalacao limpa aborta antes de o Clavis poder ser instalado.
+clavis_15="$(sed -n '/DESKTOP_CLAVIS" == "yes"/,/O Exec do .desktop/p' "$v15")"
+if grep -qE 'check_warn "DESKTOP_CLAVIS=yes mas o Clavis ainda nao' <<< "$clavis_15"; then
+    ok "Clavis ausente e AVISO (a 15 roda antes da 16 na sequencia)"
+else
+    no "Clavis ausente nao e tratado como aviso" \
+       "a 15 vem antes da 16 no ORDEM_ETAPAS: check_fail abortaria toda instalacao limpa"
+fi
+# O PATH que importa e o do usuario, nao o do root.
+if grep -q 'run_as_user command -v key' "$v15"; then
+    ok "a checagem do 'key' consulta o PATH do usuario, nao o do root"
+else
+    no "a checagem do 'key' usa o PATH errado" "quem invoca o spawn-at-startup e a sessao do usuario"
+fi
+
+# --- migracao: avisar sem quebrar -----------------------------------------
+am="$(extract_fn "$DESKTOP_DIR/14-dotfiles.sh" audit_clavis_migration)"
+if [[ -z "$am" ]]; then
+    no "14-dotfiles nao audita a migracao"
+else
+    ok "14-dotfiles audita o config.kdl existente contra a escolha de shell"
+    if grep -q 'mako' <<< "$am"; then
+        ok "a auditoria detecta o mako sobrevivente (disputa de org.freedesktop.Notifications)"
+    else
+        no "a auditoria nao detecta o mako" "e o unico dos tres que causa falha silenciosa"
+    fi
+    if grep -qE '\bdie\b' <<< "$am"; then
+        no "a auditoria de migracao usa die" "o config.kdl e do usuario: avisa-se, nao se aborta"
+    else
+        ok "a auditoria so avisa, nunca aborta nem edita"
+    fi
+fi
+# Fora do run_step: com config.kdl existente o probe passa e o do_fn nunca roda.
+if grep -qE '^audit_clavis_migration$' "$DESKTOP_DIR/14-dotfiles.sh"; then
+    ok "a auditoria roda fora do run_step (senao nunca seria alcancada)"
+else
+    no "audit_clavis_migration nao e chamada no nivel do script"
+fi
+
 finish

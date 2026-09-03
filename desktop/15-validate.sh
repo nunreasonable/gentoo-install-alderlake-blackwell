@@ -865,6 +865,71 @@ do_check_session_files() {
         check_fail "o compositor 'niri' NAO esta no PATH" "Rode a etapa 12: ./desktop/install-desktop.sh --only 12. Lembre que gui-wm/niri NAO existe no ::gentoo — vem do overlay GURU, habilitado pela etapa 10."
     fi
 
+    # --- Clavis, quando ele e o shell da sessao ---
+    #
+    # O GATE E O ARTEFATO NO DISCO, NAO O MARKER. A tentacao seria
+    # `step_done 16-clavis-build`, e ela esta errada por duas razoes que o
+    # lib.sh:667 deixa claras: o run_step grava o marker quando o PROBE passa,
+    # mesmo sem o do_fn rodar, e o `mark_done` sem valor grava a string literal
+    # 'done' — que nao e o ref e faria o proprio probe da 16 reprovar depois.
+    # Alem disso `step_value` nunca falha (retorna vazio via `|| true`), entao
+    # usa-lo direto num `if` da sempre verdadeiro.
+    #
+    # O shell.qml e o mesmo predicado que a 16 usa para dizer "instalado". Ele
+    # e um fato do disco: nao mente, nao depende da semantica de marker, e nao
+    # exige que a 16 tenha rodado NESTA execucao.
+    if [[ "$DESKTOP_CLAVIS" == "yes" ]]; then
+        if [[ -f /etc/xdg/quickshell/clavis/shell.qml ]]; then
+            check_ok "Clavis instalado (/etc/xdg/quickshell/clavis/shell.qml presente)"
+
+            # O `key` e o que o spawn-at-startup invoca, e ele resolve por PATH.
+            # Perguntamos ao USUARIO, nao ao root: o PATH e outro, e e o do
+            # usuario que vale no login.
+            if run_as_user command -v key &>/dev/null; then
+                check_ok "'key' no PATH de '$DESKTOP_USER' (e o que o spawn-at-startup do niri invoca)"
+            else
+                check_fail "'key' NAO esta no PATH de '$DESKTOP_USER' — o spawn-at-startup do niri nao vai encontra-lo e o Clavis nao sobe" "A etapa 16 instala o key-cli num venv e liga /usr/local/bin/key. Rode: ./desktop/install-desktop.sh --only 16"
+            fi
+
+            if command -v qs &>/dev/null; then
+                check_ok "'qs' (quickshell) encontrado — e o runtime que o 'key shell' executa"
+            else
+                check_fail "'qs' NAO esta no PATH: sem o quickshell o 'key shell' nao tem o que rodar" "emerge --noreplace gui-apps/quickshell (a etapa 16 cuida das keywords)"
+            fi
+
+            # Este projeto compila o Clavis fora do Portage, entao um upgrade de
+            # Qt ou um --depclean podem deixar os modulos QML linkados contra uma
+            # libQt6 que nao existe mais. O sintoma seria identico a "o shell nao
+            # sobe", e sem esta checagem o diagnostico comecaria do lugar errado.
+            local qml_so libs_faltando=""
+            for qml_so in /usr/lib*/qt6/qml/Clavis/*.so; do
+                [[ -f "$qml_so" ]] || continue
+                if ldd "$qml_so" 2>/dev/null | grep -q 'not found'; then
+                    libs_faltando="$libs_faltando ${qml_so##*/}"
+                fi
+            done
+            if [[ -n "$libs_faltando" ]]; then
+                check_fail "modulos QML do Clavis com biblioteca ausente:$libs_faltando" "O Clavis e compilado FORA do Portage, entao um upgrade de Qt nao o reconstroi. Recompile: ./desktop/install-desktop.sh --only 16 (apague antes o marker: rm $(state_dir)/16-clavis-build)"
+            else
+                check_ok "modulos QML do Clavis com todas as bibliotecas resolvidas (ldd)"
+            fi
+        else
+            # AVISO e nao FALHA, e a distincao importa: a 15 roda ANTES da 16 no
+            # ORDEM_ETAPAS. Numa instalacao limpa este caminho e o NORMAL, e
+            # reprovar aqui abortaria o install-desktop.sh antes de o Clavis ter
+            # tido a chance de ser instalado.
+            check_warn "DESKTOP_CLAVIS=yes mas o Clavis ainda nao esta instalado" "Normal se a etapa 16 ainda nao rodou — ela vem DEPOIS desta na sequencia. Se ja rodou, houve falha: veja o log da 16."
+        fi
+
+        # Com o Clavis, barra e notificacoes vem do proprio shell. As sub-etapas
+        # da 12 reportam 'nada a fazer' silenciosamente com 'none', entao o
+        # usuario nunca leria o porque em lugar nenhum.
+        [[ "$DESKTOP_BAR" == "none" ]] \
+            && log_info "  (nota: DESKTOP_BAR=none porque o Clavis desenha a propria barra — nao ha waybar a validar)"
+        [[ "$DESKTOP_NOTIFY" == "none" ]] \
+            && log_info "  (nota: DESKTOP_NOTIFY=none porque o Clavis e o servidor de notificacoes — dois daemons disputariam org.freedesktop.Notifications)"
+    fi
+
     # --- O Exec do .desktop: a armadilha mais cara do stack ---
     if [[ -f "$NIRI_SESSION_DESKTOP" ]]; then
         if _niri_desktop_exec_ok; then

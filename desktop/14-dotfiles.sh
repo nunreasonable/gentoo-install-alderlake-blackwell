@@ -331,6 +331,84 @@ niri_config_valid() {
 # funcional concreto, nao por gosto — o niri ja tem defaults sensatos para o
 # resto, e quanto menos schema nao-confirmado escrevemos, menor a chance de
 # gerar um config que a versao instalada rejeita.
+# niri_binds_launcher: os binds de lancador/shell, que dependem de QUEM e o
+# shell da sessao.
+#
+# Com o Clavis, "abrir um aplicativo" nao e mais spawn de um binario: o
+# spotlight do Clavis e uma janela do proprio shell, aberta por IPC. O bind
+# passa a chamar `key ipc call spotlight toggle` — comando literal extraido do
+# AppShell.qml do upstream, nao inventado.
+#
+# BUG QUE ISTO TAMBEM CORRIGE: o bind era `spawn "$DESKTOP_LAUNCHER"` sem
+# guarda. Com DESKTOP_LAUNCHER=none — valor documentado e aceito — o config.kdl
+# saia com `spawn "none"`, um bind que tenta executar um binario chamado
+# literalmente "none" e falha em silencio a cada Mod+D (o niri manda a saida do
+# spawn para /dev/null).
+#
+# O BIND DE RESGATE. Quando o Clavis e o shell, o fuzzel continua INSTALADO e
+# ganha um bind proprio em Mod+Shift+Space. Isso e deliberado e nao e
+# redundancia: o spotlight do Clavis depende do shell estar vivo, do venv do
+# key-cli, do symlink no PATH e do socket de IPC. O fuzzel nao depende de
+# nenhum dos quatro. Se o Clavis nao subir, o Mod+D nao faz nada — e essa e a
+# unica rota grafica que sobra alem do terminal.
+#
+# Por que o fuzzel fica e o mako nao: o mako DISPUTA org.freedesktop.Notifications
+# com o servidor de notificacoes do Clavis, e quem ganha depende da ordem de
+# arranque. O fuzzel nao e daemon, nao registra nome no D-Bus e nao roda ate
+# ser invocado — nao ha o que disputar.
+niri_binds_launcher() {
+    if [[ "$DESKTOP_CLAVIS" == "yes" ]]; then
+        cat <<'KDLCLAVIS'
+    // Lancador do Clavis (spotlight). A janela e do proprio shell e e aberta
+    // por IPC — nao ha binario de launcher. Se o shell NAO estiver rodando
+    // este bind nao faz nada, em silencio. Diagnostico, num terminal:
+    //     key ipc call spotlight toggle
+    Mod+D hotkey-overlay-title="Abrir um aplicativo (Clavis)" { spawn "key" "ipc" "call" "spotlight" "toggle"; }
+
+    // Historico de area de transferencia e seletor de papel de parede.
+    // 'apps', 'wallpapers' e 'clipboard' sao os UNICOS modos que o
+    // openMode aceita (LauncherWindow.qml); qualquer outro nao abre nada.
+    Mod+V hotkey-overlay-title="Area de transferencia (Clavis)" { spawn "key" "ipc" "call" "spotlight" "openMode" "clipboard"; }
+    Mod+Shift+W hotkey-overlay-title="Papeis de parede (Clavis)" { spawn "key" "ipc" "call" "spotlight" "openMode" "wallpapers"; }
+
+    // Busca web: metodo proprio, NAO e um modo de openMode.
+    Mod+Shift+D hotkey-overlay-title="Busca web (Clavis)" { spawn "key" "ipc" "call" "spotlight" "web"; }
+
+    // Sidebars: esquerda e o centro de notificacoes (o que substitui o popup
+    // do mako), direita sao os quick settings. 'left' e 'right' sao os unicos
+    // valores aceitos.
+    Mod+N hotkey-overlay-title="Notificacoes (Clavis)" { spawn "key" "ipc" "call" "sidebar" "toggle" "left"; }
+    Mod+Shift+N hotkey-overlay-title="Quick settings (Clavis)" { spawn "key" "ipc" "call" "sidebar" "toggle" "right"; }
+
+    // Bloqueio de tela: usa ext-session-lock-v1, o mesmo protocolo do
+    // swaylock. Idempotente — repetir devolve ALREADY_LOCKED.
+    Super+Alt+L hotkey-overlay-title="Bloquear a tela (Clavis)" { spawn "key" "ipc" "call" "lock" "open"; }
+KDLCLAVIS
+        # O resgate so existe se o fuzzel for de fato instalado.
+        if [[ "$DESKTOP_LAUNCHER" == "fuzzel" ]]; then
+            cat <<'KDLRESGATE'
+
+    // RESGATE. Nao compartilha nenhum ponto de falha com o Clavis: sem IPC,
+    // sem venv, sem PATH de symlink, sem shell vivo. Se o Mod+D parou de
+    // responder, e por aqui que voce abre alguma coisa.
+    Mod+Shift+Space hotkey-overlay-title="Lancador de resgate (fuzzel)" { spawn "fuzzel"; }
+KDLRESGATE
+        fi
+        return 0
+    fi
+
+    # Caminho sem Clavis, preservado byte a byte — exceto pela guarda de
+    # 'none', que antes gerava `spawn "none"`.
+    if [[ "$DESKTOP_LAUNCHER" == "none" ]]; then
+        printf '%s\n' "    // Nenhum lancador: DESKTOP_LAUNCHER=none. Sem bind de Mod+D."
+        return 0
+    fi
+    cat <<KDLFUZZEL
+    // Lancador de aplicativos.
+    Mod+D hotkey-overlay-title="Abrir um aplicativo: $DESKTOP_LAUNCHER" { spawn "$DESKTOP_LAUNCHER"; }
+KDLFUZZEL
+}
+
 niri_config_content() {
     # Binario do terminal conforme a escolha. O bind Mod+T precisa apontar para
     # o que realmente foi instalado pela etapa 12 — apontar para um binario
@@ -500,8 +578,7 @@ binds {
     // Terminal — a ferramenta de RECUPERACAO da sessao.
     Mod+T hotkey-overlay-title="Abrir um terminal: $term_bin" { spawn "$term_bin"; }
 
-    // Lancador de aplicativos.
-    Mod+D hotkey-overlay-title="Abrir um aplicativo: $DESKTOP_LAUNCHER" { spawn "$DESKTOP_LAUNCHER"; }
+$(niri_binds_launcher)
 
     // Fechar a janela em foco.
     Mod+Q repeat=false { close-window; }
@@ -539,6 +616,49 @@ KDL
 # Le o arquivo COMO O USUARIO: root pode enxergar um $HOME que o usuario nao le
 # (root_squash em NFS, permissao restritiva), e o que importa aqui e o que o
 # compositor — que roda como o usuario — vai efetivamente carregar.
+# audit_clavis_migration: confere o config.kdl REAL contra a escolha de shell.
+#
+# Existe pelo mesmo motivo estrutural do audit_audio_route, e fica FORA do
+# run_step pelo mesmo motivo: quando o usuario ja tem config.kdl, o probe da
+# sub-etapa passa, o do_fn nunca roda, e nada dentro do run_step chegaria a
+# olhar para o arquivo. Quem ja instalou antes desta mudanca tem um config.kdl
+# com os spawns antigos e NAO o recebe de volta — a regra de nunca sobrescrever
+# config do usuario esta funcionando, e o preco dela e este aviso.
+#
+# Avisa, nunca corrige: o arquivo e do usuario. `log_warn`, jamais `die`.
+audit_clavis_migration() {
+    [[ "$DESKTOP_CLAVIS" == "yes" ]] || return 0
+    user_file_exists "$NIRI_CONFIG" || return 0
+
+    local achou="nao"
+
+    # O pior dos tres, e o unico que nao e cosmetico: dois servidores de
+    # notificacao no mesmo bus de sessao. O nome org.freedesktop.Notifications e
+    # unico; quem sobe primeiro ganha, e a ordem nao e deterministica entre
+    # logins. Se o mako ganha, o Clavis nao acusa erro — o painel dele so fica
+    # vazio para sempre.
+    if run_as_user grep -qF 'spawn-at-startup "mako"' "$NIRI_CONFIG" 2>/dev/null; then
+        log_warn "MIGRACAO: '$NIRI_CONFIG' ainda tem 'spawn-at-startup \"mako\"' e o Clavis esta ativo. Os dois disputam org.freedesktop.Notifications no D-Bus e QUEM GANHA DEPENDE DA ORDEM DE ARRANQUE. Se o mako ganhar, o painel de notificacoes do Clavis fica permanentemente vazio, sem nenhum erro visivel. REMOVA essa linha do arquivo."
+        achou="sim"
+    fi
+
+    if run_as_user grep -qF 'spawn-at-startup "waybar"' "$NIRI_CONFIG" 2>/dev/null; then
+        log_warn "MIGRACAO: '$NIRI_CONFIG' ainda tem 'spawn-at-startup \"waybar\"'. O Clavis desenha a propria barra, entao voce vera DUAS. Cosmetico, mas remova a linha."
+        achou="sim"
+    fi
+
+    if run_as_user grep -qF 'spawn "fuzzel"' "$NIRI_CONFIG" 2>/dev/null \
+       && ! run_as_user grep -qF 'spotlight' "$NIRI_CONFIG" 2>/dev/null; then
+        log_warn "MIGRACAO: o Mod+D de '$NIRI_CONFIG' ainda chama o fuzzel direto, nao o spotlight do Clavis. Nada quebra — o fuzzel continua instalado de proposito — mas voce nao tem o launcher do Clavis. Para trocar, substitua o bind por:"
+        log_warn "    Mod+D { spawn \"key\" \"ipc\" \"call\" \"spotlight\" \"toggle\"; }"
+        achou="sim"
+    fi
+
+    if [[ "$achou" == "sim" ]]; then
+        log_warn "Estes avisos aparecem porque o modulo NUNCA reescreve o config.kdl do usuario. Para adotar o arquivo novo por inteiro — DESCARTANDO suas customizacoes — apague '$NIRI_CONFIG' e rode: ./desktop/install-desktop.sh --only 14"
+    fi
+}
+
 audit_audio_route() {
     # Sem PipeWire instalado nao ha rota nenhuma a auditar, e a 13 registrou isso
     # nao gravando o marker. Silencio e a resposta certa: o usuario que optou por
@@ -1547,6 +1667,7 @@ run_step 14-niri-config     probe_niri_config     do_niri_config
 # para o conteudo daquele arquivo. Este e o unico ponto em que uma divergencia
 # entre a decisao da 13 e o config real pode ser vista.
 audit_audio_route
+audit_clavis_migration
 
 run_step 14-fontconfig      probe_fontconfig      do_fontconfig
 run_step 14-gtk-theme       probe_gtk_theme       do_gtk_theme

@@ -31,7 +31,7 @@ Esta secao e a informacao mais importante do repositorio. Ela e literal.
 | `bash -n` (sintaxe) em todos os scripts | **Passou** |
 | ShellCheck (container, repo montado read-only) | **Passou** |
 | Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
-| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 481 asercoes em 10 grupos |
+| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 571 asercoes em 10 grupos |
 
 ### Execucao em QEMU/OVMF — **tres ciclos completos, com boot** (2026-09-01/02)
 
@@ -450,19 +450,33 @@ sudo ./desktop/install-desktop.sh --only 12  # uma etapa
 | `13` | `13-services.sh` | `seatd`/`dbus`, grupos do usuario, `XDG_RUNTIME_DIR`, rota de audio do PipeWire |
 | `15` | `15-validate.sh` | Validacao pre-reboot |
 | `14` | `14-dotfiles.sh` | Dotfiles e aparencia (`config.kdl`, zsh, tema) |
-| `16` | `16-clavis.sh` | **OPT-IN** (`DESKTOP_CLAVIS=yes`): Clavis Shell — quickshell + `key-cli` + `keytop` |
+| `16` | `16-clavis.sh` | **PADRAO** (`DESKTOP_CLAVIS=yes`): Clavis Shell — quickshell + `key-cli` + `keytop` |
 
-### Etapa 16 — Clavis Shell **[NAO VALIDADO]**
+### Etapa 16 — Clavis Shell, o shell PADRAO **[NAO VALIDADO]**
 
 O [Clavis](https://github.com/StatIndet/quickshell) e um shell Quickshell
 completo para niri: barra, notificacoes, launcher, settings center e tema
 dinamico por matugen. E o rice de referencia deste modulo.
 
-Desligado por default, por tres motivos honestos:
+**Ligado por default** desde 2026-09-03. Com `DESKTOP_CLAVIS=yes`, o
+`vars-desktop.sh` **deriva** `DESKTOP_BAR=none` e `DESKTOP_NOTIFY=none` — mas
+so quando voce nao os definiu. Escolha explicita sempre vence, e
+`DESKTOP_CLAVIS=no` restaura o caminho anterior por inteiro.
 
-- **Ele substitui waybar, mako e fuzzel**, que a etapa 12 instala. Os tres
-  continuam no sistema (o modulo nunca desinstala nada) mas ficam sem uso. Se
-  for usar o Clavis, considere `DESKTOP_BAR=none` e `DESKTOP_NOTIFY=none`.
+O `mako` sair nao e economia, e correcao: ele e o servidor de notificacoes do
+Clavis disputam `org.freedesktop.Notifications` no D-Bus, que e nome unico.
+Quem sobe primeiro ganha, e a ordem nao e deterministica entre logins — se o
+mako ganhar, o painel do Clavis fica permanentemente vazio, **sem erro
+visivel**.
+
+**O fuzzel continua instalado, de proposito.** O `Mod+D` passa a chamar o
+spotlight do Clavis por IPC, e o fuzzel ganha um bind de resgate em
+`Mod+Shift+Space`. Ele nao e daemon, nao registra nome no D-Bus e nao roda ate
+ser invocado — o argumento que obriga o mako a sair nao se aplica a ele. Em
+troca, e a unica rota grafica que nao compartilha ponto de falha nenhum com o
+Clavis: nem IPC, nem venv, nem symlink no PATH, nem o shell estar vivo.
+
+Ressalvas que continuam valendo:
 - **Nao tem ebuild** — nem ele, nem `key-cli`, nem `keytop`. Esta e a unica
   etapa do projeto que compila codigo de terceiro a partir do git, e o Portage
   nao rastreia o resultado. Nao ha `emerge --unmerge` para desfazer.
@@ -474,7 +488,7 @@ Desligado por default, por tres motivos honestos:
 **Nunca foi executado.** Foi escrito a partir de leitura do upstream e dos
 ebuilds, com revisao adversarial, e nao substitui uma execucao.
 
-### A ordem e `10 11 12 13 15 14`, e o `14` no fim e proposital
+### A ordem e `10 11 12 13 15 14 16`, e o `14` antes do `16` e proposital
 
 O `ORDEM_ETAPAS` em [`install-desktop.sh`](desktop/install-desktop.sh) e a fonte
 de verdade da sequencia, e nela a **validacao (`15`) vem antes dos dotfiles

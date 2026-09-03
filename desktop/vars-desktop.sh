@@ -222,6 +222,23 @@ export TARGET_ROOT=""
 
 # Lancador de aplicativos: fuzzel
 #
+# ---------------------------------------------------------------------------
+# Sentinelas de intencao do operador
+# ---------------------------------------------------------------------------
+#
+# Gravadas AQUI, antes de qualquer ': "${VAR:=default}"', e a ordem e
+# load-bearing: o ':=' ATRIBUI a variavel, e depois dele '${VAR+x}' esta sempre
+# setado. Ou seja, dali para a frente nao ha mais como distinguir "o operador
+# escolheu waybar" de "o default e waybar".
+#
+# Essa distincao e o que faz a derivacao do Clavis (fim deste arquivo) ser
+# segura: ela so desliga barra e notificacoes quando o operador NAO opinou.
+# Errar isto tem dois desfechos, e um deles e ruim: a derivacao nunca disparar
+# (o recurso nao funciona, mas nada quebra) ou disparar sempre (ignora a
+# escolha explicita do operador, que e o modo perigoso).
+_DESKTOP_BAR_SET="${DESKTOP_BAR+1}"
+_DESKTOP_NOTIFY_SET="${DESKTOP_NOTIFY+1}"
+
 # gui-apps/fuzzel vive no overlay GURU (~amd64) — NAO existe no ::gentoo
 # (HTTP 404 confirmado). E o launcher recomendado pelo proprio ebuild do niri
 # (optfeature "Application launcher") e o binario referenciado no bind default
@@ -448,14 +465,26 @@ export TARGET_ROOT=""
 # barra, notificacoes, launcher, settings center e tema dinamico por matugen.
 # E o rice de referencia deste modulo.
 #
-# ELE SUBSTITUI waybar, mako e fuzzel — que a etapa 12 instala. Os tres
-# continuam no sistema e nao sao removidos (o modulo nunca desinstala nada),
-# mas ficam sem uso enquanto o Clavis for o shell ativo. Se voce for usar o
-# Clavis, considere DESKTOP_BAR=none e DESKTOP_NOTIFY=none para nao compilar
-# o que nao vai rodar.
+# ELE SUBSTITUI a barra e o daemon de notificacoes. Com DESKTOP_CLAVIS=yes,
+# DESKTOP_BAR e DESKTOP_NOTIFY sao DERIVADOS para 'none' no fim deste arquivo —
+# mas so se voce nao os tiver definido. Escolha explicita sempre vence.
 #
-# 'no' e OMISSAO, nunca remocao: nada e instalado e nada existente e desfeito.
-: "${DESKTOP_CLAVIS:=no}"
+# O mako sair NAO e economia, e correcao: ele e o servidor de notificacoes do
+# Clavis disputam o nome org.freedesktop.Notifications no D-Bus de sessao, que
+# e unico. Quem sobe primeiro ganha, e a ordem nao e deterministica entre
+# logins. Se o mako ganha, o Clavis nao morre — o painel de notificacoes dele
+# so fica permanentemente vazio, sem erro visivel.
+#
+# O FUZZEL CONTINUA INSTALADO, e isso e deliberado. O Clavis tem spotlight
+# proprio e o Mod+D passa a chama-lo, mas o fuzzel ganha um bind de resgate em
+# Mod+Shift+Space. Ele nao e daemon, nao registra nome no D-Bus e nao roda ate
+# ser invocado — nao ha o que disputar, o custo em runtime e zero, e ele e a
+# unica rota grafica que nao compartilha ponto de falha nenhum com o Clavis
+# (nem IPC, nem venv, nem symlink no PATH, nem o shell estar vivo).
+#
+# 'no' e OMISSAO, nunca remocao: nada e instalado e nada existente e desfeito,
+# e o caminho sem Clavis fica identico ao que era antes desta variavel existir.
+: "${DESKTOP_CLAVIS:=yes}"
 
 # De onde vem o Clavis, e em que ponto da historia.
 #
@@ -494,3 +523,18 @@ export TARGET_ROOT=""
 : "${DESKTOP_CLAVIS_KEYTOP_URL:=https://github.com/StatIndet/keytop}"
 : "${DESKTOP_CLAVIS_KEYTOP_REF:=main}"
 : "${DESKTOP_CLAVIS_KEYTOP_SRC:=${HOME:-/home/$USERNAME}/src/clavis-keytop}"
+
+# ---------------------------------------------------------------------------
+# Derivacao: o Clavis desliga o que ele substitui
+# ---------------------------------------------------------------------------
+#
+# Precisa vir DEPOIS de todos os ': "${VAR:=default}"' — ele age sobre valores
+# ja resolvidos — e usa as sentinelas gravadas no topo, nao o valor atual.
+#
+# DESKTOP_LAUNCHER NAO entra aqui de proposito: ver o comentario de
+# DESKTOP_CLAVIS. O fuzzel fica como rede de seguranca.
+if [[ "$DESKTOP_CLAVIS" == "yes" ]]; then
+    [[ -n "$_DESKTOP_BAR_SET" ]]    || DESKTOP_BAR=none
+    [[ -n "$_DESKTOP_NOTIFY_SET" ]] || DESKTOP_NOTIFY=none
+fi
+unset _DESKTOP_BAR_SET _DESKTOP_NOTIFY_SET
