@@ -164,7 +164,7 @@ done
 #
 # ORDEM_ETAPAS e a fonte de verdade da sequencia. A 10a NAO esta aqui: ela e
 # inserida logo depois da 10 somente quando --with-profile-world e passado.
-ORDEM_ETAPAS=(10 11 12 13 15 14)
+ORDEM_ETAPAS=(10 11 12 13 15 14 16)
 
 # step_script <etapa>: nome do arquivo da etapa. Estes nomes sao o contrato
 # entre este orquestrador e os scripts numerados.
@@ -177,6 +177,7 @@ step_script() {
         13)  echo "13-services.sh" ;;
         14)  echo "14-dotfiles.sh" ;;
         15)  echo "15-validate.sh" ;;
+        16)  echo "16-clavis.sh" ;;
         *)   die "etapa inexistente: '$1' — veja ./desktop/install-desktop.sh --list" ;;
     esac
 }
@@ -191,6 +192,7 @@ step_desc() {
         13)  echo "servicos (seatd/dbus) e grupos" ;;
         14)  echo "dotfiles e aparencia" ;;
         15)  echo "validacao pre-reboot" ;;
+        16)  echo "(opt-in) Clavis Shell — quickshell + key-cli + keytop" ;;
         *)   echo "?" ;;
     esac
 }
@@ -200,7 +202,7 @@ step_desc() {
 # aqui e o erro tipico de quem vem do install.sh.
 _is_valid_step() {
     case "$1" in
-        10|10a|11|12|13|14|15) return 0 ;;
+        10|10a|11|12|13|14|15|16) return 0 ;;
         0|1|2|3|4|5|6|00|01|02|03|04|05|06)
             die "etapa '$1' pertence ao INSTALADOR BASE (00-06), nao ao modulo de desktop. As etapas deste modulo sao: ${ORDEM_ETAPAS[*]} (e 10a, opt-in)."
             ;;

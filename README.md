@@ -450,6 +450,29 @@ sudo ./desktop/install-desktop.sh --only 12  # uma etapa
 | `13` | `13-services.sh` | `seatd`/`dbus`, grupos do usuario, `XDG_RUNTIME_DIR`, rota de audio do PipeWire |
 | `15` | `15-validate.sh` | Validacao pre-reboot |
 | `14` | `14-dotfiles.sh` | Dotfiles e aparencia (`config.kdl`, zsh, tema) |
+| `16` | `16-clavis.sh` | **OPT-IN** (`DESKTOP_CLAVIS=yes`): Clavis Shell — quickshell + `key-cli` + `keytop` |
+
+### Etapa 16 — Clavis Shell **[NAO VALIDADO]**
+
+O [Clavis](https://github.com/StatIndet/quickshell) e um shell Quickshell
+completo para niri: barra, notificacoes, launcher, settings center e tema
+dinamico por matugen. E o rice de referencia deste modulo.
+
+Desligado por default, por tres motivos honestos:
+
+- **Ele substitui waybar, mako e fuzzel**, que a etapa 12 instala. Os tres
+  continuam no sistema (o modulo nunca desinstala nada) mas ficam sem uso. Se
+  for usar o Clavis, considere `DESKTOP_BAR=none` e `DESKTOP_NOTIFY=none`.
+- **Nao tem ebuild** — nem ele, nem `key-cli`, nem `keytop`. Esta e a unica
+  etapa do projeto que compila codigo de terceiro a partir do git, e o Portage
+  nao rastreia o resultado. Nao ha `emerge --unmerge` para desfazer.
+- **O upstream se descreve como "Works on my machine."** e esta em
+  desenvolvimento ativo. Por isso `DESKTOP_CLAVIS_REF` existe: fixe uma tag em
+  vez de seguir um branch movel, senao duas execucoes em dias diferentes
+  produzem sistemas diferentes.
+
+**Nunca foi executado.** Foi escrito a partir de leitura do upstream e dos
+ebuilds, com revisao adversarial, e nao substitui uma execucao.
 
 ### A ordem e `10 11 12 13 15 14`, e o `14` no fim e proposital
 

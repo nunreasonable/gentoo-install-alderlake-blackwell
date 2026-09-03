@@ -988,4 +988,157 @@ if [[ -n "$sh14" ]] && grep -q 'zsh' <<< "$sh14"; then
     fi
 fi
 
+# ===========================================================================
+# Etapa 16 — Clavis Shell
+# ===========================================================================
+# Cada asercao abaixo guarda um achado concreto: ou uma armadilha do Portage
+# confirmada lendo o ebuild, ou uma do CMake do upstream confirmada lendo o
+# core/CMakeLists.txt. Nenhuma e generica.
+printf '\n  -- 16-clavis --\n'
+
+CLAVIS_SH="$DESKTOP_DIR/16-clavis.sh"
+if [[ ! -f "$CLAVIS_SH" ]]; then
+    no "16-clavis.sh existe"
+else
+    ok "16-clavis.sh existe"
+
+    # --- Portage -----------------------------------------------------------
+    # dev-libs/qtkeychain e SLOT="0/1". Escrever ':6' (que o ':6' do Qt sugere)
+    # faz o Portage recusar o atom. O pacote e Qt6-only sem ter slot 6.
+    # strip_noise ANTES do grep: o comentario deste proprio script explica a
+    # armadilha e cita 'qtkeychain:6' textualmente. Grepar o arquivo cru faz o
+    # teste casar com a documentacao dele mesmo — o bug recorrente numero 1
+    # deste projeto (ARMADILHAS, e o 1.4 do Ciclo 1).
+    if strip_noise "$CLAVIS_SH" | grep -qE 'qtkeychain:6'; then
+        no "16-clavis usa dev-libs/qtkeychain:6, slot que NAO existe" \
+           "o SLOT real e 0/1; o Portage recusa o atom"
+    else
+        ok "qtkeychain sem slot ':6' (o slot real e 0/1)"
+    fi
+
+    # O review adversarial pegou isto no rascunho: best_visible de dev-lang/python
+    # sem slot escolhe Python 2.7.
+    if strip_noise "$CLAVIS_SH" | grep -qE 'emerge[^|]*dev-lang/python([^:]|$)'; then
+        no "16-clavis emerge dev-lang/python sem SLOT" \
+           "best_visible escolheria o slot errado; o Portage ja garante um python3"
+    else
+        ok "nao emerge dev-lang/python (evita o slot errado)"
+    fi
+
+    use_block="$(extract_fn "$CLAVIS_SH" gen_clavis_use)"
+    # vulkan NAO e default no qtbase, e o quickshell exige qtbase[dbus,vulkan].
+    if grep -qE 'dev-qt/qtbase:6 .*vulkan' <<< "$use_block"; then
+        ok "declara qtbase[vulkan] (nao e default, e o quickshell exige)"
+    else
+        no "falta qtbase[vulkan] em gen_clavis_use" "o emerge do quickshell para no autounmask"
+    fi
+    # pipewire NAO e default no libcava.
+    if grep -qE 'media-sound/libcava .*pipewire' <<< "$use_block"; then
+        ok "declara libcava[pipewire] (nao e default)"
+    else
+        no "falta libcava[pipewire]" "o plugin de cava do Clavis linka PkgConfig::Pipewire"
+    fi
+    # Toda linha de USE passa por validacao contra o IUSE real.
+    if grep -qE 'have_use_flag' <<< "$(extract_fn "$CLAVIS_SH" _use_line_clavis)"; then
+        ok "as USE do 16 sao validadas contra o IUSE real antes de escritas"
+    else
+        no "16-clavis escreve USE sem validar contra o IUSE"
+    fi
+
+    # media-sound/cava e media-sound/libcava instalam AMBOS /usr/bin/cava e nao
+    # ha blocker declarado em nenhum dos dois ebuilds.
+    if grep -q 'assert_no_cava_collision' "$CLAVIS_SH"; then
+        ok "16-clavis detecta a colisao cava/libcava (ambos instalam /usr/bin/cava)"
+    else
+        no "16-clavis nao trata a colisao entre media-sound/cava e media-sound/libcava"
+    fi
+
+    # --- CMake do upstream -------------------------------------------------
+    build_fn="$(extract_fn "$CLAVIS_SH" do_clavis_build)"
+    # O upstream NAO tem install(TARGETS): o install COPIA os .so da build-tree.
+    # Instalar sem compilar produz diretorio vazio e sai 0.
+    ln_build="$(grep -n 'cmake --build' <<< "$build_fn" | head -1 | cut -d: -f1)"
+    ln_inst="$(grep -n 'cmake --install' <<< "$build_fn" | head -1 | cut -d: -f1)"
+    if [[ -n "$ln_build" && -n "$ln_inst" ]] && (( ln_build < ln_inst )); then
+        ok "'cmake --build' vem antes de 'cmake --install' (o install copia da build-tree)"
+    else
+        no "install sem build antes (build=$ln_build install=$ln_inst)" \
+           "sem install(TARGETS), instalar antes de compilar copia um diretorio vazio E SAI 0"
+    fi
+    # CLAVIS_CONFIG_INSTALL_DIR e RELATIVO por default: com PREFIX=/usr viraria
+    # /usr/etc/xdg/..., que o XDG nao le.
+    if grep -qE 'CLAVIS_CONFIG_INSTALL_DIR=/etc/' "$CLAVIS_SH"; then
+        ok "CLAVIS_CONFIG_INSTALL_DIR passado como caminho ABSOLUTO"
+    else
+        no "CLAVIS_CONFIG_INSTALL_DIR nao e absoluto" \
+           "o default e relativo e o CMake o ancora no prefixo: /usr/etc/xdg/... nao e lido pelo XDG"
+    fi
+    # BUILD_TESTING vem do modulo CTest com default ON.
+    if grep -q 'BUILD_TESTING=OFF' "$CLAVIS_SH"; then
+        ok "BUILD_TESTING=OFF (o CTest o liga por default e arrastaria Qt6::Test)"
+    else
+        no "BUILD_TESTING nao e desligado"
+    fi
+
+    # --- Python / PEP 668 --------------------------------------------------
+    if grep -qE '(^|[^/[:alnum:]])pip install' "$CLAVIS_SH" \
+       && ! grep -qE '\$(KEY_VENV|\{KEY_VENV\})/bin/pip install|"\$KEY_VENV/bin/pip" install' "$CLAVIS_SH"; then
+        no "16-clavis roda 'pip install' fora do venv" \
+           "o Gentoo marca o interpretador como EXTERNALLY-MANAGED (PEP 668)"
+    else
+        ok "pip so e usado de dentro do venv dedicado (PEP 668)"
+    fi
+
+    # --- keytop realmente opcional ----------------------------------------
+    kt="$(extract_fn "$CLAVIS_SH" do_keytop)"
+    if grep -q 'mark_done 16-keytop skipped' <<< "$kt"; then
+        ok "falha do keytop grava desfecho e NAO derruba a etapa"
+    else
+        no "do_keytop nao registra o desfecho de falha" \
+           "a sub-etapa reprovaria para sempre e travaria o operador numa parte opcional"
+    fi
+
+    # --- nao escrever config do upstream ----------------------------------
+    # Os servicos do Clavis sao self-healing: criam os defaults no primeiro
+    # start. Materializar os JSON aqui so criaria divergencia a cada versao.
+    if strip_noise "$CLAVIS_SH" | grep -qE '\.config/clavis/[a-z-]+\.json'; then
+        no "16-clavis escreve JSON em ~/.config/clavis" \
+           "o upstream cria os defaults sozinho; escrever aqui diverge a cada versao"
+    else
+        ok "nao escreve ~/.config/clavis (o upstream materializa os defaults)"
+    fi
+fi
+
+# --- registro no orquestrador ---------------------------------------------
+# O review adversarial classificou "etapa nao registrada" como bloqueador: o
+# script existiria e nunca rodaria.
+ORQ="$DESKTOP_DIR/install-desktop.sh"
+ordem="$(grep -m1 '^ORDEM_ETAPAS=' "$ORQ")"
+if grep -q '16' <<< "$ordem"; then
+    ok "a etapa 16 esta em ORDEM_ETAPAS"
+else
+    no "a etapa 16 nao esta em ORDEM_ETAPAS" "o script existiria e nunca seria executado: $ordem"
+fi
+# A 16 depende do config.kdl que a 14 cria — tem de vir DEPOIS dela.
+seq="$(sed -n 's/^ORDEM_ETAPAS=(\(.*\))/\1/p' "$ORQ")"
+pos14=-1; pos16=-1; i=0
+for n in $seq; do
+    [[ "$n" == "14" ]] && pos14=$i
+    [[ "$n" == "16" ]] && pos16=$i
+    i=$((i + 1))
+done
+if (( pos14 >= 0 && pos16 > pos14 )); then
+    ok "a etapa 16 roda depois da 14 (ela exige o config.kdl que a 14 cria)"
+else
+    no "ordem errada: 16 nao vem depois de 14 (14=$pos14 16=$pos16)" \
+       "os scripts do Clavis que inserem os includes abortam com exit 3 sem o config.kdl"
+fi
+for fn in step_script step_desc; do
+    if grep -qE '16\)' <<< "$(extract_fn "$ORQ" "$fn")"; then
+        ok "$fn conhece a etapa 16"
+    else
+        no "$fn nao conhece a etapa 16"
+    fi
+done
+
 finish

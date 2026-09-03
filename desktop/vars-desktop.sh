@@ -437,3 +437,60 @@ export TARGET_ROOT=""
 # a verdade, e nao um bug.
 : "${DESKTOP_MIN_FREE_ROOT_GIB:=10}"
 : "${DESKTOP_MIN_FREE_TMP_GIB:=15}"
+
+# ---------------------------------------------------------------------------
+# Clavis Shell (etapa 16)
+# ---------------------------------------------------------------------------
+
+# Instalar o Clavis Shell? (yes|no)
+#
+# O Clavis (StatIndet/quickshell) e um shell Quickshell completo para niri:
+# barra, notificacoes, launcher, settings center e tema dinamico por matugen.
+# E o rice de referencia deste modulo.
+#
+# ELE SUBSTITUI waybar, mako e fuzzel — que a etapa 12 instala. Os tres
+# continuam no sistema e nao sao removidos (o modulo nunca desinstala nada),
+# mas ficam sem uso enquanto o Clavis for o shell ativo. Se voce for usar o
+# Clavis, considere DESKTOP_BAR=none e DESKTOP_NOTIFY=none para nao compilar
+# o que nao vai rodar.
+#
+# 'no' e OMISSAO, nunca remocao: nada e instalado e nada existente e desfeito.
+: "${DESKTOP_CLAVIS:=no}"
+
+# De onde vem o Clavis, e em que ponto da historia.
+#
+# O DEFAULT NAO E UM BRANCH MOVEL, e isso e deliberado. A descricao do
+# repositorio upstream e literalmente "Works on my machine." e o README diz
+# "under active development". Apontar para 'main' significa que duas execucoes
+# do instalador em dias diferentes produzem sistemas diferentes — o oposto do
+# que este projeto persegue. Fixe uma tag e suba quando VOCE decidir.
+#
+# Para ver o que existe:  git ls-remote --tags $DESKTOP_CLAVIS_URL
+: "${DESKTOP_CLAVIS_URL:=https://github.com/StatIndet/quickshell}"
+: "${DESKTOP_CLAVIS_REF:=main}"
+
+# Onde o checkout vive. Fica no HOME porque quem COMPILA e o usuario: compilar
+# como root deixaria a build-tree e o cache do Qt com dono root dentro do HOME,
+# que e a forma silenciosa de quebrar a sessao seguinte.
+: "${DESKTOP_CLAVIS_SRC:=${HOME:-/home/$USERNAME}/src/clavis-shell}"
+
+# key-cli: o comando `key`, que e o que efetivamente inicia o shell.
+#
+# Instalado num venv dedicado com symlink em /usr/local/bin, e nao com pip:
+# o Gentoo marca o interpretador do sistema como EXTERNALLY-MANAGED (PEP 668),
+# o `pip --user` fica versionado pelo minor do Python (um `eselect python set`
+# faria o comando sumir do PATH), e dev-python/pipx NAO existe na arvore.
+: "${DESKTOP_CLAVIS_KEY_URL:=https://github.com/StatIndet/key-cli}"
+: "${DESKTOP_CLAVIS_KEY_REF:=main}"
+: "${DESKTOP_CLAVIS_KEY_VENV:=/opt/clavis/key-cli}"
+
+# keytop: monitor de sistema que alimenta os graficos de CPU/GPU do shell.
+#
+# OPCIONAL de verdade: o SystemMonitorService do Clavis trata a ausencia dele
+# com mensagem e o resto do shell funciona inteiro. A etapa 16 nao morre se a
+# compilacao dele falhar — perder os graficos custa muito menos que ficar sem
+# sessao grafica.
+: "${DESKTOP_CLAVIS_KEYTOP:=yes}"
+: "${DESKTOP_CLAVIS_KEYTOP_URL:=https://github.com/StatIndet/keytop}"
+: "${DESKTOP_CLAVIS_KEYTOP_REF:=main}"
+: "${DESKTOP_CLAVIS_KEYTOP_SRC:=${HOME:-/home/$USERNAME}/src/clavis-keytop}"

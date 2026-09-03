@@ -17,7 +17,7 @@ leitura de codigo.
 | Instalacoes em **bare metal** | **1 completa + boot** (2026-09-02), seguida do modulo `desktop/` |
 | Bugs encontrados por execucao | **23** (22 no codigo, 1 de ergonomia) |
 | Bugs encontrados por analise estatica | **0** dos 23 acima |
-| Suite de testes do host | 10 grupos, **512 asercoes**, exit 0 |
+| Suite de testes do host | 10 grupos, **553 asercoes**, exit 0 |
 | Validado em hardware fisico | Base + `desktop/`, **uma execucao**, com intervencao manual em 8 pontos |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
@@ -943,5 +943,5 @@ completo com boot. O ext4 continua com dois.
 
 | | |
 |---|---|
-| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 512 asercoes. Nao validada em bare metal nem com btrfs |
+| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 553 asercoes. Nao validada em bare metal nem com btrfs |
 | Desktop | **Baixa, inalterada** — nunca executado. Esta rodada melhorou consistencia e cobertura de teste; nao substitui execucao |

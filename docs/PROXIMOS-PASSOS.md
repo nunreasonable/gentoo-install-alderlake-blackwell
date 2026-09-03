@@ -18,7 +18,7 @@ rodar o módulo `desktop/` até uma sessão niri sob Wayland.
 | Bare metal | **Feito** (2026-09-02) — com intervenção manual em 8 pontos |
 | WiFi (`iwd`) no sistema instalado | **Funcionando**, após corrigir 4 símbolos de cripto no kernel |
 
-Suíte do host: `./tests/run-tests.sh` → 512 asserções. Testes estáticos não
+Suíte do host: `./tests/run-tests.sh` → 553 asserções. Testes estáticos não
 provam boot.
 
 ---
