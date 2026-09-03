@@ -351,7 +351,7 @@ done
 # hifen) e que exista a barra.
 # Categorias reais do Portage. Um prefixo fora desta lista, em posicao de atom,
 # e sinal de nome inventado — exatamente o que a regra 3 do projeto proibe.
-CAT_OK='^(acct-group|acct-user|app-admin|app-arch|app-crypt|app-editors|app-eselect|app-emulation|app-misc|app-portage|app-shells|app-text|dev-lang|dev-libs|dev-util|dev-build|gnome-base|gnome-extra|gui-apps|gui-libs|gui-wm|media-fonts|media-gfx|media-libs|media-plugins|media-sound|media-video|net-misc|net-wireless|sec-keys|sys-apps|sys-auth|sys-boot|sys-devel|sys-fs|sys-kernel|sys-libs|sys-power|sys-process|virtual|www-client|x11-apps|x11-base|x11-drivers|x11-libs|x11-misc|x11-terms|x11-themes|x11-wm)/'
+CAT_OK='^(acct-group|acct-user|app-admin|app-arch|app-crypt|app-editors|app-eselect|app-emulation|app-misc|app-portage|app-shells|app-text|dev-lang|dev-libs|dev-util|dev-build|dev-cpp|gnome-base|gnome-extra|gui-apps|gui-libs|gui-wm|media-fonts|media-gfx|media-libs|media-plugins|media-sound|media-video|net-misc|net-wireless|sec-keys|sys-apps|sys-auth|sys-boot|sys-devel|sys-fs|sys-kernel|sys-libs|sys-power|sys-process|virtual|www-client|x11-apps|x11-base|x11-drivers|x11-libs|x11-misc|x11-terms|x11-themes|x11-wm)/'
 
 # (a) Argumentos LITERAIS passados as funcoes de pacote tem de ser categoria/nome.
 # Extraimos so os tokens que parecem nome de pacote (nao variaveis, nao flags,
@@ -813,4 +813,179 @@ for f in "${DESKTOP_ALL[@]}"; do
 done
 
 rm -rf "$sent_tmp"
+
+# ===========================================================================
+# Ciclo bare metal (2026-09-02) — regressoes achadas executando o modulo
+# ===========================================================================
+# Cada bloco guarda um bug REAL que so apareceu rodando o desktop/ no hardware.
+# Os que NAO sao detectaveis estaticamente estao listados no VALIDACAO.md 5.x.
+printf '\n  -- regressoes do ciclo bare metal --\n'
+
+# --- Bug 11: 00cpu-flags no formato do package.use, nao no do humano --------
+# cpuid2cpuflags imprime "CPU_FLAGS_X86: aes avx" (dois-pontos, para humano).
+# O package.use exige */* CPU_FLAGS_X86="aes avx". Gravar a saida crua produzia
+# arquivo que o Portage ignora e que o probe nunca reconhece.
+cpuf="$(extract_fn "$DESKTOP_DIR/10-portage-desktop.sh" do_cpu_flags)"
+if [[ -z "$cpuf" ]]; then
+    no "do_cpu_flags nao existe em 10-portage-desktop.sh"
+else
+    if grep -q 'CPU_FLAGS_X86="' <<< "$cpuf"; then
+        ok "do_cpu_flags gera CPU_FLAGS_X86=\"...\" (sintaxe do package.use)"
+    else
+        no "do_cpu_flags nao gera a sintaxe CPU_FLAGS_X86=\"...\"" \
+           "gravar a saida crua do cpuid2cpuflags produz ':' e o Portage ignora a linha"
+    fi
+    # O gerador e o probe tem de falar do MESMO formato.
+    cpup="$(extract_fn "$DESKTOP_DIR/10-portage-desktop.sh" probe_cpu_flags)"
+    if grep -q 'CPU_FLAGS_X86=' <<< "$cpup"; then
+        ok "probe_cpu_flags procura o mesmo formato que do_cpu_flags grava"
+    else
+        no "probe_cpu_flags e do_cpu_flags divergem no formato"
+    fi
+    # Teste FUNCIONAL da conversao: a saida real do cpuid2cpuflags, convertida.
+    conv="$(sed 's/^CPU_FLAGS_X86: /*\/* CPU_FLAGS_X86="/; s/$/"/' \
+            <<< 'CPU_FLAGS_X86: aes avx avx2 f16c fma3 mmx mmxext pclmul popcnt sse')"
+    assert_eq '*/* CPU_FLAGS_X86="aes avx avx2 f16c fma3 mmx mmxext pclmul popcnt sse"' \
+        "$conv" "a conversao produz exatamente a linha que o package.use espera"
+fi
+
+# --- Bug 13: terminal Wayland nao pode vir com backend X -------------------
+gpu="$(extract_fn "$DESKTOP_DIR/10-portage-desktop.sh" gen_package_use)"
+if grep -qE 'x11-terms/kitty .*wayland' <<< "$gpu"; then
+    ok "gen_package_use declara USE do kitty (wayland)"
+else
+    no "gen_package_use nao declara USE do kitty" \
+       "sem isso o kitty vem com o default do perfil (X) e arrasta a stack X11"
+fi
+if grep -qE 'x11-terms/kitty .*-X' <<< "$gpu"; then
+    ok "o kitty tem -X explicito (sistema Wayland puro)"
+else
+    no "o kitty nao desliga X explicitamente"
+fi
+
+# --- Bug 14: atom multi-slot precisa de SLOT ao consultar IUSE -------------
+# portageq best_visible / dev-cpp/gtkmm resolve para o slot 4.0, cujo IUSE nao
+# tem 'wayland'. O waybar precisa do 3.0. Sem o slot a validacao consulta o
+# pacote errado e reprova um flag que existe.
+if grep -q 'dev-cpp/gtkmm' <<< "$gpu"; then
+    if grep -q 'dev-cpp/gtkmm:3.0' <<< "$gpu"; then
+        ok "gtkmm e referenciado com SLOT explicito (:3.0)"
+    else
+        no "gtkmm aparece sem SLOT em gen_package_use" \
+           "best_visible resolveria o slot 4.0 e o IUSE consultado seria o errado"
+    fi
+fi
+huf="$(extract_fn "$LIBD" have_use_flag)"
+if grep -q 'SLOT' <<< "$huf"; then
+    ok "have_use_flag avisa quando o atom nao declara SLOT"
+else
+    no "have_use_flag nao alerta sobre atom sem SLOT" \
+       "um atom ambiguo volta a reprovar flags que existem, sem dizer por que"
+fi
+
+# --- Bug 15: cairo declarado UMA vez (X e -X colidem no slot 0) ------------
+cairo_n="$(grep -cE '^[[:space:]]*_use_line x11-libs/cairo ' <<< "$gpu" || true)"
+if (( cairo_n == 1 )); then
+    ok "x11-libs/cairo e declarado exatamente uma vez ($cairo_n)"
+else
+    no "x11-libs/cairo declarado $cairo_n vezes" \
+       "duas linhas com X e -X reproduzem o 'slot conflict: x11-libs/cairo:0' por escrito"
+fi
+for pair in "x11-libs/gtk+:wayland" "dev-libs/libdbusmenu:gtk3" "media-libs/mesa:wayland" "media-libs/freetype:harfbuzz"; do
+    atom="${pair%%:*}"; flag="${pair##*:}"
+    if grep -qE "_use_line ${atom//+/\\+} .*${flag}" <<< "$gpu"; then
+        ok "cadeia transitiva declara ${atom}[${flag}]"
+    else
+        no "falta ${atom}[${flag}] em gen_package_use" "a etapa 12 aborta no autounmask"
+    fi
+done
+
+# --- Bug 10: simbolos de cripto que o iwd cobra em RUNTIME -----------------
+# Nao aparecem em falha de build: sem eles o iwd fica em 'crashed' no sistema
+# ja instalado, e numa maquina so-Wi-Fi isso e um sistema sem rede.
+frag="$REPO_DIR/kernel-fragment.config"
+req04="$(sed -n '/local -a required=(/,/^    )/p' "$REPO_DIR/04-kernel.sh")"
+if grep -qE '^[[:space:]]*net-wireless/iwd|ENABLE_WIFI' "$REPO_DIR/vars.sh" "$REPO_DIR/06-users-services.sh" > /dev/null 2>&1; then
+    for sym in KEY_DH_OPERATIONS CRYPTO_CBC CRYPTO_DES CRYPTO_ECB CRYPTO_USER_API_SKCIPHER; do
+        if grep -qx "CONFIG_$sym=y" "$frag"; then
+            ok "kernel-fragment tem CONFIG_$sym=y (exigido pelo ell/iwd em runtime)"
+        else
+            no "CONFIG_$sym ausente ou nao built-in no fragmento" \
+               "o iwd fica em 'crashed' depois do boot, sem rede para consertar"
+        fi
+        if grep -qE "^\s+$sym\b" <<< "$req04"; then
+            ok "verify_kconfig exige $sym"
+        else
+            no "verify_kconfig nao exige $sym" \
+               "um fragmento editado poderia remove-lo e so o primeiro boot acusaria"
+        fi
+    done
+fi
+
+# --- Bug 16: rota de audio depende do init script, nao so da versao --------
+pa="$(extract_fn "$DESKTOP_DIR/13-services.sh" probe_audio_user_services)"
+da="$(extract_fn "$DESKTOP_DIR/13-services.sh" do_audio_user_services)"
+if grep -q 'svc_script_exists pipewire' <<< "$pa"; then
+    ok "probe_audio_user_services considera a ausencia do init script"
+else
+    no "probe_audio_user_services so olha a versao do OpenRC" \
+       "com USE=-system-service nao ha init script, e o probe cobra um servico impossivel"
+fi
+if grep -qE 'openrc_version_ge 0\.60 && svc_script_exists' <<< "$da"; then
+    ok "do_audio_user_services exige as DUAS condicoes para a rota de servicos"
+else
+    no "do_audio_user_services decide a rota so pela versao do OpenRC" \
+       "'OpenRC >= 0.60 => servicos de usuario' e falso quando nao ha init script"
+fi
+
+# --- Bug 17: gsettings precisa de barramento de sessao ---------------------
+for fn in gsettings_get gsettings_set_checked; do
+    body="$(extract_fn "$DESKTOP_DIR/14-dotfiles.sh" "$fn")"
+    if grep -q 'dbus-run-session' <<< "$body"; then
+        ok "$fn roda sob dbus-run-session"
+    else
+        no "$fn roda sem barramento de sessao" \
+           "sem D-Bus o dconf usa backend em memoria: sai com 0 e o valor evapora"
+    fi
+done
+if grep -q 'tail -1' <<< "$(extract_fn "$DESKTOP_DIR/14-dotfiles.sh" gsettings_get)"; then
+    ok "gsettings_get filtra o ruido do dbus-daemon (tail -1)"
+else
+    no "gsettings_get nao filtra a saida do dbus-daemon" \
+       "as linhas do daemon contaminam a captura e a comparacao falha com aspas duplicadas"
+fi
+
+# --- Bug 18: o perfil escrito pelo 13 e o shell posto pelo 14 --------------
+# O 13 roda ANTES do 14. Escrever so no .bash_profile deixava o zsh (que o 14
+# configura) sem o trecho, e /run/user/$UID nunca era criado: a sessao morria
+# com 'RuntimeDirNotSet', um panic que nao aponta para o shell.
+xpf="$(extract_fn "$DESKTOP_DIR/13-services.sh" _xdg_profile_files)"
+if [[ -z "$xpf" ]]; then
+    no "13-services nao tem _xdg_profile_files" \
+       "o trecho de XDG_RUNTIME_DIR iria sempre para o .bash_profile"
+else
+    ok "13-services escolhe o arquivo de perfil por funcao dedicada"
+    if grep -q 'zprofile' <<< "$xpf"; then
+        ok "_xdg_profile_files contempla .zprofile (zsh nao le .bash_profile)"
+    else
+        no "_xdg_profile_files nao contempla zsh"
+    fi
+    if grep -q 'DESKTOP_SHELL' <<< "$xpf"; then
+        ok "_xdg_profile_files considera o shell que a etapa 14 vai configurar"
+    else
+        no "_xdg_profile_files so olha o shell ATUAL" \
+           "a 13 roda antes da 14, entao o shell atual ainda e o antigo"
+    fi
+fi
+# Coerencia entre as duas etapas: o shell que a 14 configura tem de estar
+# coberto pela 13.
+sh14="$(extract_fn "$DESKTOP_DIR/14-dotfiles.sh" do_shell)"
+if [[ -n "$sh14" ]] && grep -q 'zsh' <<< "$sh14"; then
+    if grep -q 'zsh' <<< "$xpf"; then
+        ok "o shell configurado pela 14 (zsh) e coberto pelo perfil escrito pela 13"
+    else
+        no "a 14 configura zsh mas a 13 nao escreve num perfil que o zsh le"
+    fi
+fi
+
 finish

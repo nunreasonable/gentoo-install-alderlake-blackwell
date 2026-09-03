@@ -899,8 +899,20 @@ GTK_MONO_FONT_NAME="$DESKTOP_FONT_MONO 11"
 # rodando nao recebem a notificacao de mudanca. Como esta etapa roda ANTES de a
 # sessao grafica existir, isso e exatamente o que queremos: gravar o valor para
 # que a sessao futura o leia.
+# dbus-run-session e OBRIGATORIO, nao decorativo. Estas helpers rodam a partir
+# de um shell de root que NAO tem barramento de sessao. Sem D-Bus o dconf cai
+# num backend EM MEMORIA: o `gsettings set` sai com 0 e o valor evapora ao fim
+# do processo. O sintoma era a propria checagem abaixo acusando
+#     o valor de 'color-scheme' foi gravado mas a releitura devolveu 'default'
+# — ou seja, o gsettings_set_checked funcionou como projetado e revelou o
+# problema; o que faltava era a sessao. Observado no bare metal em 2026-09-02.
+#
+# O `tail -1` existe por causa da correcao acima: o dbus-daemon que o
+# dbus-run-session sobe escreve linhas proprias, e sem o filtro a captura vinha
+# contaminada — a comparacao falhava com ''prefer-dark'' != 'prefer-dark'
+# (aspas duplicadas), que parece bug de formato e nao e.
 gsettings_get() {
-    run_as_user gsettings get "$1" "$2" 2>/dev/null
+    run_as_user dbus-run-session gsettings get "$1" "$2" 2>/dev/null | tail -1
 }
 
 # gsettings_set_checked <schema> <chave> <valor>: grava e CONFERE.
@@ -911,7 +923,9 @@ gsettings_get() {
 gsettings_set_checked() {
     local schema="$1" key="$2" value="$3" got
 
-    run_as_user gsettings set "$schema" "$key" "$value" \
+    # dbus-run-session: ver o comentario de gsettings_get. Sem barramento de
+    # sessao o dconf usa backend em memoria e esta gravacao nao persiste.
+    run_as_user dbus-run-session gsettings set "$schema" "$key" "$value" \
         || die "falha ao gravar '$key' em '$schema' via gsettings. Causa mais provavel: gnome-base/gsettings-desktop-schemas nao esta instalado (o erro tipico e 'No such schema'). Confira com: gsettings list-schemas | grep org.gnome.desktop.interface"
 
     got="$(gsettings_get "$schema" "$key")" || got=""

@@ -8,11 +8,15 @@ Le-se na ordem. As secoes 1–4 sao **antes de rodar o instalador**, as 5–7 sa
 **antes do primeiro reboot**, as 8–12 sao **no primeiro boot**, as 13–15 sao
 **recuperacao e limpeza** (retomar apos falha, hashes de senha que sobram,
 retomar com outra versao do instalador). A 16 e especifica de **btrfs** e a 17
-trata de arquivos em `/boot` que o GRUB confunde com kernels.
+trata de arquivos em `/boot` que o GRUB confunde com kernels. As 18-20 sao do
+**modulo `desktop/`** (iwd sem cripto no kernel, `XDG_RUNTIME_DIR` e como
+testar a sessao do niri) e so importam depois do primeiro boot.
 
-> **Regra de ouro deste projeto:** nada aqui foi executado em hardware real.
-> Mantenha SEMPRE um live USB gravado e testado ao alcance, e **nao apague a
-> instalacao anterior** ate um boot completo ter sucesso.
+> **Regra de ouro deste projeto:** houve **uma** execucao em hardware real
+> (2026-09-02, base + `desktop/`), com intervencao manual em oito pontos. Uma
+> execucao nao e reprodutibilidade. Mantenha SEMPRE um live USB gravado e
+> testado ao alcance, e **nao apague a instalacao anterior** ate um boot
+> completo ter sucesso.
 
 ---
 
@@ -924,3 +928,156 @@ grep -n 'linux[[:space:]]*/boot/' /boot/grub/grub.cfg
 ```
 
 Toda linha listada tem de apontar para um `vmlinuz-*` de verdade.
+
+---
+
+## 18. `iwd` em `crashed`: falta simbolo de cripto no kernel
+
+**O que pode dar errado:** o sistema boota, o `iwlwifi` carrega, a interface
+aparece — e o `iwd` nao sobe. Numa maquina sem cabo, isso e ficar sem rede logo
+depois da instalacao, sem como emergir o conserto.
+
+**Como o sintoma se apresenta** (nenhuma linha menciona kernel ou cripto):
+
+```
+# rc-service iwd status
+ * status: crashed
+# ip link show wlan0
+    ... <NO-CARRIER,BROADCAST,MULTICAST,UP> ...
+# ping gentoo.org
+ping: gentoo.org: Temporary failure in name resolution
+```
+
+**Verifique** rodando o daemon em foreground — e o unico jeito de ver a lista:
+
+```sh
+/usr/libexec/iwd -d
+```
+
+Saida **boa**: linhas de debug e o daemon fica rodando (Ctrl+C para sair).
+
+Saida **ruim**: uma ou mais linhas nomeando simbolos ausentes. Quem exige e o
+`dev-libs/ell`, que abre sockets `AF_ALG` — nao o iwd diretamente.
+
+Confira contra o kernel em execucao:
+
+```sh
+zgrep -E 'CONFIG_(KEY_DH_OPERATIONS|CRYPTO_CBC|CRYPTO_DES|CRYPTO_ECB|CRYPTO_USER_API_SKCIPHER)=' /proc/config.gz
+```
+
+Esperado: **cinco** linhas, todas terminando em `=y`. Se `/proc/config.gz` nao
+existir, use `/boot/config-$(uname -r)` ou `/usr/src/linux/.config`.
+
+**Se der errado:** os simbolos ja estao no `kernel-fragment.config` deste repo
+desde 2026-09-02. Um kernel compilado **antes** dessa data nao os tem, e a
+correcao e recompilar:
+
+```sh
+cd /root/gentoo-install && git pull
+./install.sh --chroot --only 4     # ja dentro do sistema instalado
+```
+
+O `verify_kconfig` agora reprova antes de compilar se algum faltar.
+
+**Enquanto isso, para ter rede:** use cabo, ou tethering USB pelo celular
+(`net-misc/dhcpcd` ja esta instalado e o `r8169`/`cdc_ether` sao built-in).
+
+---
+
+## 19. `XDG_RUNTIME_DIR` ausente: a sessao grafica nao sobe
+
+**O que pode dar errado:** o `niri` morre no arranque com um panic de Rust que
+**nao menciona** o shell nem o diretorio:
+
+```
+panicked at src/niri.rs: called `Result::unwrap()` on an `Err` value: RuntimeDirNotSet
+```
+
+Exportando a variavel a mao, o erro muda mas nao melhora:
+
+```
+Unable to set up transient service directory: XDG_RUNTIME_DIR
+"/run/user/1000" not available: No such file or directory
+```
+
+**A causa e o shell de login.** Na rota `seatd` (sem elogind) nao ha logind para
+criar `/run/user/$UID`. O modulo resolve isso em duas pecas:
+
+| Peca | Onde | Cria |
+|---|---|---|
+| `/etc/local.d/create-runuser.start` | sistema, a cada boot | so o **pai** `/run/user` (1777) |
+| trecho no perfil do usuario | login | `/run/user/$UID` (0700) |
+
+Se o trecho estiver num arquivo que o seu shell **nao le**, a segunda peca nunca
+roda. O zsh nao le `.bash_profile`.
+
+**Verifique ANTES de tentar a sessao:**
+
+```sh
+getent passwd "$USER" | cut -d: -f7          # qual shell voce realmente tem
+grep -l 'XDG_RUNTIME_DIR (modulo desktop' ~/.zprofile ~/.bash_profile ~/.profile 2>/dev/null
+```
+
+O arquivo listado pelo segundo comando tem de corresponder ao shell do primeiro:
+
+| Shell | Arquivo que ele le no login |
+|---|---|
+| `/bin/zsh` | `~/.zprofile` |
+| `/bin/bash` | `~/.bash_profile` (e `~/.profile` se aquele nao existir) |
+
+Depois de um login novo:
+
+```sh
+echo "$XDG_RUNTIME_DIR"                       # esperado: /run/user/1000
+stat -c '%a %U' "$XDG_RUNTIME_DIR"            # esperado: 700 <seu-usuario>
+```
+
+**Se der errado:** re-execute a etapa 13, que hoje escreve nos perfis do shell
+atual **e** do que a etapa 14 configura:
+
+```sh
+sudo ./desktop/install-desktop.sh --only 13
+```
+
+E faca **logout/login** — o trecho roda no login, nao no momento em que e
+escrito.
+
+---
+
+## 20. `niri --session` roda como o USUARIO, nunca como root
+
+**O que pode dar errado:** voce testa a sessao com `sudo` ou de um shell de root
+e conclui que o modulo esta quebrado. Sao dois erros distintos, os dois com
+sintoma enganoso.
+
+**O comando certo**, como o proprio usuario, num TTY:
+
+```sh
+dbus-run-session niri --session
+```
+
+**O que da errado como root:**
+
+1. **Arquivo de configuracao errado.** O niri le `$HOME/.config/niri/config.kdl`.
+   Como root isso e `/root/.config/niri/config.kdl` — que **nao** e o arquivo
+   que a etapa 14 gerou. Voce testa uma configuracao que nao existe, ou o
+   default do upstream.
+2. **Render node.** O acesso a `/dev/dri/renderD128` e mediado pelo `seatd` e
+   pelo grupo `video`, para a sessao **do usuario**. Rodar como root nao herda a
+   sessao de seat e o acesso falha.
+
+**Verifique antes de acusar o modulo:**
+
+```sh
+whoami                                        # tem de ser o SEU usuario
+ls -l ~/.config/niri/config.kdl               # tem de existir e ser seu
+id -nG | tr ' ' '\n' | grep -x video          # tem de listar 'video'
+ls -l /dev/dri/renderD128                     # tem de existir
+rc-service seatd status                       # tem de estar 'started'
+```
+
+**Se der errado:** o `dbus-run-session` e obrigatorio na rota OpenRC. O
+`niri-session` do upstream **nao** serve aqui: ele procura `systemctl` ou
+`dinitctl`, nao acha nenhum, imprime `No systemd or dinit detected` e **sai**. E
+por isso que o `package.use` deste modulo fixa `gui-wm/niri -systemd` — com a
+flag ligada, o `.desktop` instalado aponta para o script errado.

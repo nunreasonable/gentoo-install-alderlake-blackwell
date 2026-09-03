@@ -108,32 +108,48 @@ exige medir o **custo** de um resume, e um exige um humano tentando fazer login.
 A auditoria adversarial de 13 dimensoes, o `bash -n` e o ShellCheck passaram por
 cima de **todos**.
 
+### O que ja rodou no hardware alvo **[BARE-METAL-OK]**
+
+Em 2026-09-02 o instalador rodou na B760M-E de verdade, com `ROOT_FS=btrfs`, e o
+modulo `desktop/` foi executado logo em seguida. `[BARE-METAL-OK]` significa
+**observado funcionando uma vez**, nao reprodutibilidade — leia a coluna da
+direita, que diz exatamente o que foi visto.
+
+| Verificacao | O que foi provado |
+|---|---|
+| Boot em bare metal | O sistema instalado **bootou** e chegou ao runlevel completo. Uma vez |
+| Runtime NVIDIA na Blackwell | O modulo **carregou** e o handoff `simpledrm` → `nvidia-drm` ocorreu **sem tela preta**. Firmware GSP e modeset funcionaram o bastante para a sessao subir |
+| Render node | O `/dev/dri/renderD128` foi **aberto pelo niri**. E a prova de que o caminho DRM/KMS esta completo ate o compositor |
+| NVRAM do firmware ASUS 1836 | A entrada UEFI gravada pelo `grub-install` **funcionou** neste firmware |
+| NVMe fisico | Particionado, formatado em btrfs e montado — no controlador real, nao virtio |
+| Rede | **Wi-Fi** (`wlan0` via `iwd`) funcionando, **depois** de corrigir o kernel (ver 5.1) |
+| Sessao Wayland | `niri` 26.04 **rodando** sob Wayland na GPU Blackwell |
+
 ### O que continua **NAO** validado
 
 | Verificacao | Estado |
 |---|---|
-| Boot em **bare metal** | **NUNCA** |
-| **Runtime** NVIDIA (modulo, GSP, modeset, Blackwell) | **Impossivel em QEMU** — o Ciclo 2 validou o **build**, nao o funcionamento |
-| NVRAM do firmware **ASUS 1836** (o OVMF nao e ele) | **NUNCA** |
-| Alder Lake real: ITMT, Thread Director, `intel_pstate`/`intel_idle` | **NUNCA** |
-| NVMe fisico, rede e audio da B760M-E | **NUNCA** |
-| Suspend/resume | **NUNCA** |
-| Re-execucao / resume apos falha real | **Executado ~9x** (involuntariamente, a cada bug) |
-| Reinstalacao sobre disco ja usado | **Executada** (Ciclo 2) |
-| Instalacao limpa com o codigo ATUAL, sem intervencao | **NUNCA** — cada ciclo corrigiu bugs no meio |
-| `ROOT_FS=btrfs` | **Instalou, mas NAO bootou** no Ciclo 3 (`block-group-tree`). Corrigido; a correcao ainda nao foi reexecutada |
+| Instalacao limpa com o codigo ATUAL, sem intervencao | **NUNCA** — o ciclo bare metal exigiu **intervencao manual em 8 pontos** |
+| Reprodutibilidade de qualquer coisa acima | **NUNCA** — cada linha do quadro `[BARE-METAL-OK]` foi observada **uma** vez |
+| **Audio** | **NUNCA testado.** O PipeWire foi configurado (rota launcher), mas nenhum som foi reproduzido |
+| Suspend/resume | **NUNCA** — nem em VM, nem no hardware |
+| Alder Lake: ITMT, Thread Director, `intel_pstate`/`intel_idle` | **Nao medido.** O sistema roda; que o escalonador use os P-cores corretamente nao foi verificado |
+| Estabilidade sob carga, termica, jogos | **NUNCA** |
+| Segundo boot / boot apos atualizacao de kernel | **NUNCA** |
 | Branch `INIT_SYSTEM=systemd` | **NUNCA** executado |
+| Etapa `06-sudo` (versao corrigida) | Corrigida durante o ciclo; **nao reexecutada** |
 
 ### Traduzindo
 
-A instalacao roda de ponta a ponta e o sistema resultante **boota**, numa VM,
-com OpenRC — em disco limpo e tambem por cima de uma instalacao anterior. Isso
-foi provado duas vezes, em 2026-09-01, e o `nvidia-drivers` **compilou** contra
-o kernel gerado.
+O instalador base roda de ponta a ponta e o sistema **boota** — tres vezes em
+QEMU (duas em ext4, uma em btrfs) e **uma** no hardware alvo. Sobre esta ultima
+sessao tambem rodou o modulo `desktop/`, terminando com niri sob Wayland na
+Blackwell.
 
-Isso ainda **nao** e reprodutibilidade: cada ciclo corrigiu bugs no meio, entao
+Isso **nao** e reprodutibilidade. O ciclo bare metal precisou de intervencao
+manual em oito pontos, e as correcoes foram escritas **durante** a execucao:
 nenhuma instalacao completa foi feita com o codigo exatamente como esta hoje.
-E **nao** e o hardware alvo — QEMU nao e uma B760M-E com uma RTX 5060 Ti.
+A proxima execucao limpa e o teste que importa, e ela ainda nao aconteceu.
 
 A parte do projeto que mais pode dar errado — o driver NVIDIA proprietario
 **carregando** numa GPU Blackwell fisica, com o firmware GSP e o handoff de
@@ -410,6 +426,56 @@ estado** — nao comportamento de runtime. Nenhum teste particiona, monta, baixa
 ou compila coisa alguma. Um teste estatico que passa **nao** significa que a
 etapa correspondente foi validada; significa que a propriedade que ele afirma
 continua verdadeira no codigo.
+
+## Modulo `desktop/` — niri sob Wayland **[BARE-METAL-OK: uma execucao]**
+
+Diretorio separado, executado **depois** de o sistema base estar instalado e
+**bootado**. Ele nunca roda dentro do live ISO e nunca a partir do `install.sh`:
+o orquestrador proprio e `desktop/install-desktop.sh`.
+
+```sh
+sudo ./desktop/install-desktop.sh            # fluxo completo
+sudo ./desktop/install-desktop.sh --list     # so mostra a sequencia
+sudo ./desktop/install-desktop.sh --only 12  # uma etapa
+```
+
+### Etapas
+
+| Etapa | Script | O que faz |
+|---|---|---|
+| `10` | `10-portage-desktop.sh` | Overlay GURU, `package.accept_keywords`, `package.use` do stack, `CPU_FLAGS_X86`, e o portao `10-atoms-resolvable` que prova que tudo e visivel ao Portage **antes** de compilar |
+| `10a` | `10a-profile-world.sh` | **OPT-IN**, desligado por default: troca para o perfil `23.0/desktop` e roda `emerge -uDN @world`. So com `--with-profile-world` |
+| `11` | `11-nvidia-wayland.sh` | `nvidia-drivers` com `USE=wayland`, modeset e o handoff de console |
+| `12` | `12-niri-stack.sh` | `niri`, terminal, launcher, barra, notificacoes — a etapa longa |
+| `13` | `13-services.sh` | `seatd`/`dbus`, grupos do usuario, `XDG_RUNTIME_DIR`, rota de audio do PipeWire |
+| `15` | `15-validate.sh` | Validacao pre-reboot |
+| `14` | `14-dotfiles.sh` | Dotfiles e aparencia (`config.kdl`, zsh, tema) |
+
+### A ordem e `10 11 12 13 15 14`, e o `14` no fim e proposital
+
+O `ORDEM_ETAPAS` em [`install-desktop.sh`](desktop/install-desktop.sh) e a fonte
+de verdade da sequencia, e nela a **validacao (`15`) vem antes dos dotfiles
+(`14`)**. A razao: o `15` verifica o *sistema* — servicos, grupos, render node,
+drivers — e essas sao as condicoes que fazem a sessao subir. Falhar nelas depois
+de gastar tempo escrevendo configuracao de aparencia seria desperdicio, e pior,
+os dotfiles do `14` dependem de decisoes que o `13` grava em markers (a rota de
+audio, por exemplo, define se o `config.kdl` declara `spawn-at-startup`).
+
+A `10a` **nao** aparece no `ORDEM_ETAPAS`: ela e inserida logo depois da `10`
+somente quando `--with-profile-world` e passado. Ela roda antes da `11` de
+proposito — um `@world` depois do driver recompilaria o `nvidia-drivers` duas
+vezes.
+
+### O que este modulo ja provou, e o que nao
+
+Uma execucao completa no hardware alvo, em 2026-09-02, terminando com **niri
+26.04 rodando sob Wayland na RTX 5060 Ti**. Nove defeitos foram encontrados e
+corrigidos nesse percurso ([VALIDACAO.md, Ciclo 5](docs/VALIDACAO.md)).
+
+O que isso **nao** significa: as correcoes foram escritas durante a execucao,
+entao o modulo **nunca rodou limpo** com o codigo atual. Audio nao foi testado.
+Nada foi reexecutado. O ponto mais fragil e a etapa `12`, pela cadeia
+GTK3 + portal GNOME + Wayland — cinco dos nove defeitos vieram dali.
 
 ### Senhas e material sensivel
 

@@ -500,6 +500,43 @@ fi
 # --- fim XDG_RUNTIME_DIR ---
 SNIPPET
 
+# _xdg_profile_files: os arquivos de perfil que precisam conter o trecho.
+#
+# BUG QUE ISTO CORRIGE (bare metal, 2026-09-02): o trecho ia SEMPRE para o
+# ~/.bash_profile. A etapa 14 configura zsh como shell do usuario, e o zsh NAO
+# le .bash_profile. Resultado: /run/user/$UID nunca era criado no login e a
+# sessao grafica nao subia, com um panic do Rust que nao aponta para o shell:
+#     panicked at src/niri.rs: ... Err value: RuntimeDirNotSet
+#
+# As duas etapas discordavam sobre qual shell o usuario tem — e a 13 roda ANTES
+# da 14, entao consultar so o shell ATUAL nao resolve: no momento em que a 13
+# roda o shell ainda e o bash.
+#
+# Por isso cobrimos os dois: o shell efetivo de agora (getent passwd) e o que a
+# 14 vai configurar (DESKTOP_SHELL). Quando coincidem, e um arquivo so. O
+# trecho e idempotente (mkdir -p + chmod 0700), entao estar em dois arquivos
+# nao causa dano — e apenas um deles e lido por qualquer login dado.
+_xdg_profile_files() {
+    local home shell_now
+    home="$(user_home)" || return 1
+    [[ -n "$home" ]] || return 1
+    shell_now="$(getent passwd "$DESKTOP_USER" | cut -d: -f7)"
+
+    local -A want=()
+    case "$shell_now" in
+        */zsh)  want["$home/.zprofile"]=1 ;;
+        */bash) want["$home/.bash_profile"]=1 ;;
+        # Shell desconhecido: .profile e o denominador comum do POSIX.
+        *)      want["$home/.profile"]=1 ;;
+    esac
+    case "$DESKTOP_SHELL" in
+        zsh)  want["$home/.zprofile"]=1 ;;
+        bash) want["$home/.bash_profile"]=1 ;;
+    esac
+
+    printf '%s\n' "${!want[@]}"
+}
+
 probe_xdg_runtime_dir() {
     # Rota elogind: nao se aplica (o elogind ja cria e gerencia /run/user/$UID
     # com o ciclo de vida da sessao). Retornar 0 registra a etapa como concluida
@@ -512,13 +549,17 @@ probe_xdg_runtime_dir() {
     # arquivos com o bit de execucao — sem ele o script e ignorado em silencio).
     [[ -x "$LOCAL_D_SCRIPT" ]] || return 1
 
-    # Peca 2: o trecho esta no perfil do usuario. Procuramos a linha-marca do
-    # bloco, nao um arquivo inteiro, porque o ~/.bash_profile pertence ao
-    # usuario e pode ter muito mais coisa.
-    local home
-    home="$(getent passwd "$DESKTOP_USER" | cut -d: -f6)" || return 1
-    [[ -n "$home" ]] || return 1
-    grep -qF 'XDG_RUNTIME_DIR (modulo desktop' "$home/.bash_profile" 2>/dev/null
+    # Peca 2: o trecho esta em TODOS os perfis que o usuario pode vir a usar.
+    # Procuramos a linha-marca do bloco, nao um arquivo inteiro, porque esses
+    # arquivos pertencem ao usuario e podem ter muito mais coisa.
+    local f files
+    files="$(_xdg_profile_files)" || return 1
+    [[ -n "$files" ]] || return 1
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        grep -qF 'XDG_RUNTIME_DIR (modulo desktop' "$f" 2>/dev/null || return 1
+    done <<< "$files"
+    return 0
 }
 
 do_xdg_runtime_dir() {
@@ -565,22 +606,26 @@ EOF
     #
     # ESCRITO COMO O USUARIO (run_as_user), nunca como root: um ~/.bash_profile
     # com dono root dentro do $HOME e um jeito silencioso de quebrar a sessao.
-    local home
-    home="$(user_home)"
+    local f files
+    files="$(_xdg_profile_files)" \
+        || die "nao foi possivel determinar o home/shell de '$DESKTOP_USER' para escrever o trecho de XDG_RUNTIME_DIR."
 
     # append_line_once compara linha inteira; aqui o conteudo e um BLOCO, entao
     # a guarda de idempotencia e a linha-marca verificada pelo probe. Fazemos a
     # checagem explicitamente para nao duplicar o bloco em re-execucoes.
-    if grep -qF 'XDG_RUNTIME_DIR (modulo desktop' "$home/.bash_profile" 2>/dev/null; then
-        log_info "'$home/.bash_profile' ja contem o trecho de XDG_RUNTIME_DIR — nada a fazer"
-    else
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        if grep -qF 'XDG_RUNTIME_DIR (modulo desktop' "$f" 2>/dev/null; then
+            log_info "'$f' ja contem o trecho de XDG_RUNTIME_DIR — nada a fazer"
+            continue
+        fi
         # `tee -a` dentro do su: o append acontece com a identidade do usuario,
         # entao um arquivo criado agora nasce com o dono correto.
         printf '\n%s\n' "$XDG_PROFILE_SNIPPET" \
-            | run_as_user tee -a "$home/.bash_profile" > /dev/null \
-            || die "falha ao acrescentar o trecho de XDG_RUNTIME_DIR em '$home/.bash_profile'."
-        log_info "trecho de XDG_RUNTIME_DIR acrescentado a '$home/.bash_profile' (como '$DESKTOP_USER')"
-    fi
+            | run_as_user tee -a "$f" > /dev/null \
+            || die "falha ao acrescentar o trecho de XDG_RUNTIME_DIR em '$f'."
+        log_info "trecho de XDG_RUNTIME_DIR acrescentado a '$f' (como '$DESKTOP_USER')"
+    done <<< "$files"
 
     log_warn "XDG_RUNTIME_DIR so passa a existir na sessao apos NOVO login (o trecho roda no perfil do shell). Faca logout/login antes de testar a sessao grafica."
 }
@@ -660,6 +705,32 @@ probe_audio_user_services() {
         return 0
     fi
 
+    # TERCEIRO CAMINHO: nao existe init script para o PipeWire.
+    #
+    # Este modulo define `media-video/pipewire ... -system-service`, e esta
+    # certo em faze-lo: o proprio ebuild marca 'system-service' como "Not
+    # recommended", e em OpenRC o PipeWire e servico de USUARIO. Mas com essa
+    # flag o ebuild nao instala init script NENHUM — nem de sistema nem de
+    # usuario.
+    #
+    # As duas premissas do script colidiam aqui: "OpenRC >= 0.60 => servicos de
+    # usuario disponiveis" e FALSO quando nao ha init script para habilitar. Sem
+    # este caminho o probe cobrava um servico que nao podia existir, e a etapa
+    # terminava com:
+    #     '/etc/init.d/pipewire' nao existe - pulando
+    #     do_fn terminou mas o probe ainda reporta nao-feito
+    # Observado no bare metal em 2026-09-02. O cabecalho deste proprio arquivo
+    # (linhas 35-37) ja documentava que nao ha servico de sistema para o
+    # PipeWire; a logica do do_fn nao seguia o proprio comentario.
+    #
+    # Exigimos o marker: sem init script a rota TEM de ser 'launcher', e e o
+    # marker que faz a 14 declarar o spawn-at-startup. Reportar "feito" sem ele
+    # deixaria a 14 sem rota e a sessao sem audio, silenciosamente.
+    if ! svc_script_exists pipewire; then
+        [[ "$(step_value 13-audio-route)" == "launcher" ]] && return 0
+        return 1
+    fi
+
     # Rota de user services: os dois servicos precisam estar no runlevel de
     # usuario. `rc-update -U show` lista o runlevel do usuario que RODA o
     # comando — por isso a consulta vai via run_as_user, e nao como root.
@@ -691,9 +762,16 @@ do_audio_user_services() {
         log_warn "media-video/wireplumber NAO esta instalado. O PipeWire sozinho nao aplica politica de dispositivo nenhuma: o audio fica MUDO e nenhum dispositivo aparece. Instale com: emerge --noreplace media-video/wireplumber"
     fi
 
-    # Bifurcacao MEDIDA, nao suposta.
-    if openrc_version_ge 0.60; then
-        log_info "OpenRC >= 0.60 — usando servicos de USUARIO (rc-update add -U)"
+    # Bifurcacao MEDIDA, nao suposta — e ela depende de DOIS fatos, nao de um:
+    # a versao do OpenRC E a existencia do init script. Com
+    # `-system-service` (que este modulo define, corretamente) o ebuild do
+    # PipeWire nao instala init script nenhum, e "OpenRC >= 0.60" passa a ser
+    # verdadeiro e irrelevante: nao ha servico para habilitar. Sem a segunda
+    # condicao o do_fn tomava a rota de servicos de usuario, avisava
+    # "'/etc/init.d/pipewire' nao existe - pulando" duas vezes, gravava o marker
+    # 'user-services' e deixava o probe reprovando para sempre.
+    if openrc_version_ge 0.60 && svc_script_exists pipewire; then
+        log_info "OpenRC >= 0.60 e init script presente — usando servicos de USUARIO (rc-update add -U)"
 
         local svc
         for svc in "${AUDIO_SERVICES[@]}"; do
@@ -737,10 +815,18 @@ do_audio_user_services() {
             log_warn "ATENCAO ao config.kdl herdado da rota antiga: se ele foi gerado quando a rota era 'launcher', ainda contem 'spawn-at-startup \"/usr/bin/gentoo-pipewire-launcher\"'. Com os servicos de usuario agora habilitados, as duas rotas ficam ativas e o PipeWire sobe DUAS vezes. REMOVA essa linha do config.kdl de '$DESKTOP_USER' (a etapa 14 nao a remove: o arquivo ja existe e pertence a voce)."
         fi
     else
-        # FALLBACK documentado. Nao e erro: e a rota correta nesta versao.
+        # FALLBACK documentado. Nao e erro: e a rota correta nos dois casos que
+        # chegam aqui. Reportamos QUAL deles, porque a acao corretiva difere:
+        # versao velha se resolve com `emerge -u openrc`; ausencia de init
+        # script e o comportamento ESPERADO com -system-service e nao se
+        # "resolve" — a rota do launcher e a certa.
         local have_ver
         have_ver="$(openrc --version 2>/dev/null | head -n1)" || have_ver="desconhecida"
-        log_warn "OpenRC anterior a 0.60 (detectado: $have_ver) — servicos de USUARIO nao estao disponiveis nesta versao."
+        if ! openrc_version_ge 0.60; then
+            log_warn "OpenRC anterior a 0.60 (detectado: $have_ver) — servicos de USUARIO nao estao disponiveis nesta versao."
+        else
+            log_info "OpenRC $have_ver tem servicos de usuario, mas nao existe '/etc/init.d/pipewire': o ebuild nao instala init script com USE=-system-service, que e como este modulo o configura (o proprio ebuild marca 'system-service' como 'Not recommended'). A rota correta aqui e o launcher."
+        fi
 
         # A existencia do launcher e verificada, nao presumida: se ele nao
         # existir, as duas rotas estao fechadas e o usuario precisa saber agora.

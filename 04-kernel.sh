@@ -301,6 +301,13 @@ verify_kconfig() {
         PKCS7_MESSAGE_PARSER
         CRYPTO_USER_API_HASH
         CRYPTO_USER_API_SKCIPHER
+        # Estes quatro nao aparecem em NENHUMA falha de build: o iwd cobra em
+        # runtime, via dev-libs/ell, e sem eles o servico fica em `crashed` sem
+        # mensagem util. Foi o que aconteceu no bare metal em 2026-09-02.
+        KEY_DH_OPERATIONS
+        CRYPTO_CBC
+        CRYPTO_DES
+        CRYPTO_ECB
         EFI_STUB
         EFI_PARTITION       # tabela GPT
         VFAT_FS             # ESP

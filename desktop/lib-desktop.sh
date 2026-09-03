@@ -412,11 +412,31 @@ require_atoms() {
 # autoritativa e nao exige app-portage/gentoolkit instalado. O prefixo "+"/"-"
 # dos defaults do IUSE e removido antes da comparacao.
 have_use_flag() {
-    local atom="$1" flag="$2" best cpv iuse f
+    local atom="$1" flag="$2" best cpv iuse f slot
     best="$(have_atom "$atom")" || return 1
     # best_visible devolve o CPV completo (categoria/nome-versao), que e o que
     # `portageq metadata` espera.
     cpv="$best"
+
+    # Atom sem SLOT num pacote multi-slot resolve para o slot ERRADO, em
+    # silencio, e a validacao passa a consultar o IUSE de OUTRO pacote.
+    # Aconteceu no bare metal em 2026-09-02: `dev-cpp/gtkmm` resolveu para o
+    # slot 4.0 (IUSE: gtk-doc test) enquanto o waybar precisa do 3.0 (IUSE
+    # inclui wayland). O erro sai como "o USE flag 'wayland' NAO existe no IUSE
+    # de 'dev-cpp/gtkmm'" — sobre um flag que existe de fato.
+    #
+    # Heuristica: se o chamador nao pediu slot e o slot resolvido nao e o
+    # default '0', o atom e ambiguo. Aviso e nao erro — quem quer o slot que o
+    # Portage escolheu esta certo; quem nao quer precisa saber disso agora, nao
+    # depois de uma mensagem que parece dizer que o flag nao existe.
+    if [[ "$atom" != *:* ]]; then
+        slot="$(portageq metadata / ebuild "$cpv" SLOT 2>/dev/null)" || slot=""
+        slot="${slot%%/*}"   # SLOT pode vir como "3.0/24"; o subslot nao importa
+        if [[ -n "$slot" && "$slot" != "0" ]]; then
+            log_warn "have_use_flag: o atom '$atom' nao declara SLOT e o Portage resolveu '$cpv' (SLOT=$slot). Se voce precisa de outro slot, escreva '${atom}:<slot>' — sem isso a validacao de IUSE consulta o pacote errado e reprova flags que existem."
+        fi
+    fi
+
     iuse="$(portageq metadata / ebuild "$cpv" IUSE 2>/dev/null)" || return 1
     [[ -n "$iuse" ]] || return 1
     for f in $iuse; do

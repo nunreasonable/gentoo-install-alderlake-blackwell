@@ -244,10 +244,19 @@ do_cpu_flags() {
     [[ -n "$flags" ]] \
         || die "cpuid2cpuflags devolveu saida VAZIA — isso nao e esperado numa CPU x86. Nao gravamos um valor vazio porque isso desligaria silenciosamente todas as otimizacoes. Investigue rodando 'cpuid2cpuflags' a mao."
 
-    # A saida ja vem no formato "CPU_FLAGS_X86: mmx sse ...". O wiki manda gravar
-    # como uma linha */* em package.use — aplica a TODOS os pacotes, que e o
-    # comportamento desejado para uma propriedade da CPU.
-    local line="*/* ${flags}"
+    # O cpuid2cpuflags imprime para HUMANO: "CPU_FLAGS_X86: mmx sse ..." — com
+    # DOIS-PONTOS. O package.use exige a sintaxe de variavel:
+    #     */* CPU_FLAGS_X86="mmx sse ..."
+    # Gravar a saida crua produzia um arquivo que o Portage ignora e que o
+    # probe (que procura 'CPU_FLAGS_X86=') nunca reconhece — a etapa terminava
+    # e o re-probe reprovava:
+    #     [10-cpu-flags] do_fn terminou mas o probe ainda reporta nao-feito
+    # Observado no bare metal em 2026-09-02. Mesmo padrao do 1.3 do Ciclo 1:
+    # o verificador estava certo, o gerador estava errado.
+    local line
+    line="$(sed 's/^CPU_FLAGS_X86: /*\/* CPU_FLAGS_X86="/; s/$/"/' <<< "$flags")"
+    [[ "$line" == '*/* CPU_FLAGS_X86="'*'"' ]] \
+        || die "nao foi possivel converter a saida do cpuid2cpuflags para a sintaxe do package.use. Recebido: '$flags'. Esperado algo como 'CPU_FLAGS_X86: aes avx ...'."
     log_info "CPU_FLAGS_X86 detectado nesta maquina: $flags"
 
     # Aviso, nao erro: a presenca de avx512 e suspeita neste hardware hibrido,
@@ -360,7 +369,7 @@ _use_line() {
     for flag in "$@"; do
         bare="${flag#-}"
         have_use_flag "$atom" "$bare" \
-            || die "o USE flag '$bare' NAO existe no IUSE de '$atom' nesta versao da arvore. Gravar um flag inexistente em package.use faz o Portage recusar o emerge do stack inteiro. Confira o IUSE real com: portageq metadata / ebuild \$(portageq best_visible / $atom) IUSE"
+            || die "o USE flag '$bare' NAO existe no IUSE de '$atom' nesta versao da arvore. Gravar um flag inexistente em package.use faz o Portage recusar o emerge do stack inteiro. Confira o IUSE real com: portageq metadata / ebuild \$(portageq best_visible / $atom) IUSE — e se '$atom' tiver mais de um SLOT, repita o comando com o slot explicito ('$atom:<slot>'): o best_visible escolhe UM slot e o IUSE varia entre eles."
     done
     printf '%s %s\n' "$atom" "$*"
 }
@@ -453,6 +462,67 @@ gen_package_use() {
         printf '%s\n' "# destravar a tela — bloqueio permanente da sessao. A flag e +pam por"
         printf '%s\n' "# default; a linha existe para que um -pam acidental nunca passe."
         _use_line gui-apps/swaylock pam gdk-pixbuf
+        printf '%s\n' ""
+    fi
+
+    # --- terminal ---------------------------------------------------------
+    # O DESKTOP_TERMINAL escolhe QUAL pacote emergir, mas ate o bare metal
+    # nenhuma USE era declarada para ele. O kitty entao vinha com o default do
+    # perfil (X, sem wayland) e arrastava a stack X11 inteira: a etapa 12
+    # abortava exigindo libxkbcommon[X] e caia numa circular do dev-lang/go.
+    # foot e alacritty nao precisam de linha (sao Wayland-nativos).
+    if [[ "$DESKTOP_TERMINAL" == "kitty" ]] && have_atom x11-terms/kitty > /dev/null 2>&1; then
+        printf '%s\n' "# kitty: wayland -X. Sem isso o ebuild usa o default do perfil (X) e puxa"
+        printf '%s\n' "# libxkbcommon[X] + a stack X11 num sistema que nao roda X."
+        _use_line x11-terms/kitty wayland -X
+        printf '%s\n' ""
+    fi
+
+    # --- cadeia transitiva: GTK3 + portal GNOME + Wayland -----------------
+    #
+    # NENHUM destes flags e exigido pelo niri, pelo waybar ou por qualquer
+    # pacote que este modulo emerge diretamente. Todos vem de dependencias de
+    # dependencias, e cada um foi descoberto por um autounmask que abortou a
+    # etapa 12 no bare metal, um por vez, em 2026-09-02.
+    #
+    # As duas cadeias que os produzem:
+    #
+    #   niri[screencast] -> xdg-desktop-portal-gnome -> libadwaita ->
+    #     appstream -> appstream-glib -> pango        => cairo[X], freetype[harfbuzz]
+    #
+    #   waybar -> gtk-layer-shell                     => gtk+[wayland,-X]
+    #   waybar[tray] -> libayatana-appindicator        => libdbusmenu[gtk3]
+    #   waybar -> cairomm -> pangomm -> gtkmm:3.0      => mesa[wayland], cairo[-X]
+    #
+    # O `cairo X aqua` e a resolucao da COLISAO entre elas: a cadeia do portal
+    # exige cairo[X], a do gtkmm exige cairo[-X], e o Portage relata
+    # "slot conflict: x11-libs/cairo:0". O `aqua` e a saida que o proprio
+    # Portage sugere. Uma linha so, nao duas — declarar cairo duas vezes com
+    # flags opostas seria o mesmo conflito escrito por nos.
+    #
+    # ESTE E O PONTO MAIS FRAGIL DO MODULO. A combinacao abaixo foi exercitada
+    # numa unica configuracao: waybar + screencast + kitty. Outra combinacao
+    # pode produzir um conjunto diferente, e o sintoma sera o mesmo autounmask.
+    printf '%s\n' "# Cadeia TRANSITIVA (GTK3 + portal GNOME + Wayland). Nenhum destes flags e"
+    printf '%s\n' "# pedido pelo niri ou pelo waybar: todos vem de dependencia de dependencia,"
+    printf '%s\n' "# e cada um abortou a etapa 12 no autounmask antes de ser declarado aqui."
+    printf '%s\n' "#"
+    printf '%s\n' "# cairo: X exigido pela cadeia do portal GNOME, -X pela do gtkmm. 'aqua'"
+    printf '%s\n' "# resolve o slot conflict de x11-libs/cairo:0 — e a saida que o proprio"
+    printf '%s\n' "# Portage sugere. NAO desdobre em duas linhas."
+    _use_line x11-libs/cairo X aqua
+    _use_line media-libs/freetype harfbuzz
+    printf '%s\n' ""
+
+    if [[ "$DESKTOP_BAR" == "waybar" ]]; then
+        printf '%s\n' "# Cadeia do waybar. O gtkmm precisa do SLOT explicito: sem ele o"
+        printf '%s\n' "# 'portageq best_visible' resolve para o slot 4.0, cujo IUSE nao tem"
+        printf '%s\n' "# 'wayland', e a validacao reprova um flag que existe no slot 3.0."
+        _use_line x11-libs/gtk+ wayland -X
+        _use_line dev-libs/libdbusmenu gtk3
+        _use_line media-libs/mesa wayland
+        _use_line dev-cpp/cairomm X
+        _use_line dev-cpp/gtkmm:3.0 wayland
         printf '%s\n' ""
     fi
 }

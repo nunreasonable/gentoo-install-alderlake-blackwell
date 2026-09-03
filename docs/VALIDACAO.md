@@ -14,15 +14,15 @@ leitura de codigo.
 | | |
 |---|---|
 | Ciclos completos em QEMU/OVMF | **3** (instalacao ponta a ponta + boot) — 2 em ext4, 1 em btrfs |
-| Instalacoes em **bare metal** | **1 em andamento** (2026-09-02) |
-| Bugs encontrados por execucao | **13** (12 no codigo, 1 de ergonomia) |
-| Bugs encontrados por analise estatica | **0** dos 13 acima |
-| Suite de testes do host | 10 grupos, **481 asercoes**, exit 0 |
-| Validado em hardware fisico | **nada ainda** — primeira instalacao em curso |
+| Instalacoes em **bare metal** | **1 completa + boot** (2026-09-02), seguida do modulo `desktop/` |
+| Bugs encontrados por execucao | **23** (22 no codigo, 1 de ergonomia) |
+| Bugs encontrados por analise estatica | **0** dos 23 acima |
+| Suite de testes do host | 10 grupos, **512 asercoes**, exit 0 |
+| Validado em hardware fisico | Base + `desktop/`, **uma execucao**, com intervencao manual em 8 pontos |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
 auditoria adversarial multi-agente de 13 dimensoes passaram por cima de **todos
-os treze**. Cada um exigiu executar o codigo.
+os vinte e tres**. Cada um exigiu executar o codigo.
 
 ---
 
@@ -338,6 +338,287 @@ plano venha antes da confirmacao.
 > As duas correcoes de `ROOT_FS` deste ciclo atacam pontas diferentes: 3.3
 > impede o estrago numa retomada, 4.2 impede o erro na origem. Nenhuma das duas
 > sozinha teria evitado as tres ocorrencias.
+
+---
+
+## Ciclo 5 — modulo `desktop/` no bare metal (2026-09-02)
+
+ASUS TUF GAMING B760M-E D4 (firmware 1836) · i5-12600K · RTX 5060 Ti 16GB
+(Blackwell/GB206) · NVMe · OpenRC · `ROOT_FS=btrfs`.
+
+Sistema base ja instalado e bootado. Esta sessao executou o `desktop/` de ponta
+a ponta, etapas `10`→`15`, e terminou com **niri 26.04 rodando sob Wayland na
+GPU Blackwell**: modulo NVIDIA carregado, handoff `simpledrm` → `nvidia-drm` sem
+tela preta, `/dev/dri/renderD128` aberto pelo compositor.
+
+**Nove defeitos** no percurso. Cinco deles na etapa `12`, todos na mesma cadeia
+de dependencias — ver 5.6.
+
+> **A execucao NAO foi limpa.** Houve intervencao manual em oito pontos, e as
+> correcoes abaixo foram escritas *durante* a instalacao. O que este ciclo prova
+> e que o caminho existe e termina numa sessao grafica funcionando **uma vez**,
+> nao que o codigo atual o percorre sozinho. Isso ainda nao foi tentado.
+
+### 5.1 — `iwd` nao inicia: simbolos de cripto ausentes no kernel
+
+**Sintoma:** `rc-service iwd status` → `crashed`. Sem Wi-Fi, `wlan0` em
+`NO-CARRIER`, `ping` falhando com "Temporary failure in name resolution". O log
+do servico nao dizia nada util.
+
+**Diagnostico:** rodar o daemon em foreground imprimiu a lista exata:
+
+```sh
+/usr/libexec/iwd -d
+```
+
+**Causa raiz:** quem exige os simbolos e o `dev-libs/ell` (dependencia do iwd),
+que abre sockets `AF_ALG` do kernel. O fragmento nao habilitava
+`KEY_DH_OPERATIONS`, `CRYPTO_CBC` nem `CRYPTO_DES`. Sem eles o `ell` falha na
+inicializacao e o iwd se recusa a subir.
+
+O gate `verify_kconfig` nao pegou porque validava a cadeia de **boot** e os
+simbolos de cripto que o iwd usa em *build* — nao os que ele cobra em
+**runtime**. Nenhuma falha de compilacao acontece; o problema so existe depois
+do primeiro boot.
+
+**Delta real no repositorio** (registrado porque diverge do relato inicial): dos
+cinco simbolos citados no diagnostico, **dois ja estavam** no fragmento e no
+gate — `CRYPTO_USER_API_SKCIPHER` e `CRYPTO_ECB`. A saida do `iwd -d` lista o
+requisito completo, nao so o que falta. Foram acrescentados **quatro**:
+`KEY_DH_OPERATIONS`, `CRYPTO_CBC`, `CRYPTO_DES` e `CRYPTO_DES3_EDE_X86_64`
+(este ultimo e otimizacao assembly, nao requisito).
+
+**Correcao:** os quatro no `kernel-fragment.config`, e os tres obrigatorios
+tambem no array `required` do `verify_kconfig`.
+
+**Gravidade: alta.** Numa maquina so-Wi-Fi isso e um sistema sem rede logo apos
+o primeiro boot — e sem rede nao da nem para emergir o conserto.
+
+**Teste:** 10 asercoes cobram os cinco simbolos no fragmento **e** no gate.
+
+### 5.2 — `00cpu-flags` gerado em formato invalido (`:` em vez de `=`)
+
+**Sintoma:** `[10-cpu-flags] do_fn terminou mas o probe ainda reporta nao-feito
+— sub-etapa inconsistente`.
+
+**Causa raiz:** o `cpuid2cpuflags` imprime para humano —
+`CPU_FLAGS_X86: aes avx ...`, com dois-pontos. O `package.use` exige a sintaxe
+de variavel: `*/* CPU_FLAGS_X86="aes avx ..."`. O `do_fn` gravava a saida crua;
+o probe procurava `CPU_FLAGS_X86=` e nunca achava.
+
+**Correcao:**
+
+```sh
+cpuid2cpuflags | sed 's/^CPU_FLAGS_X86: /*\/* CPU_FLAGS_X86="/; s/$/"/'
+```
+
+Mais um `die` se a conversao nao produzir a forma esperada — falhar na hora e
+melhor que gravar um arquivo que o Portage ignora em silencio.
+
+**Mesmo padrao do 1.3:** o verificador estava certo, o gerador estava errado. La
+o `make install` gravava `/boot/vmlinuz` sem versao e a checagem pos-instalacao
+pegou; aqui o gerador escreve o formato errado e o probe pega. Nos dois casos o
+instinto de "consertar o teste que reclama" seria o movimento exatamente errado.
+
+**Teste:** 3 asercoes, incluindo uma **funcional** que roda o `sed` sobre uma
+saida real e compara com a linha esperada byte a byte.
+
+### 5.3 — USE transitivas da cadeia GTK/GNOME ausentes
+
+**Sintoma:** a etapa `12` aborta no autounmask exigindo `x11-libs/cairo X` e
+`>=media-libs/freetype-2.14.3 harfbuzz`.
+
+**Causa raiz:** nenhuma das duas e exigida pelo niri. Elas vem de:
+
+```
+niri[screencast] -> xdg-desktop-portal-gnome -> libadwaita ->
+  appstream -> appstream-glib -> pango
+```
+
+O portal entra porque `niri[screencast]` precisa de um. O `have_use_flag` valida
+IUSE corretamente, mas nao tem como saber de dependencias de USE **entre**
+pacotes — ele responde "este flag existe?", nao "esta arvore de dependencias
+fecha?".
+
+**Correcao:** as duas no `gen_package_use()`.
+
+### 5.4 — kitty com backend X num sistema Wayland puro
+
+**Sintoma:** a etapa `12` aborta exigindo `>=x11-libs/libxkbcommon-1.13.2 X`,
+mais uma dependencia circular do `dev-lang/go`.
+
+**Causa raiz:** o `12-niri-stack.sh` escolhe **qual** pacote emergir via
+`DESKTOP_TERMINAL`, mas nunca declarava USE flags para ele. O kitty veio com o
+default do perfil (`USE="X -wayland"`) e arrastou a stack X11 inteira.
+
+**Correcao:** `_use_line x11-terms/kitty wayland -X` no `gen_package_use()`,
+guardado por `have_atom` e pelo valor de `DESKTOP_TERMINAL` — foot e alacritty
+sao Wayland-nativos e nao precisam de linha. A circular do Go some junto.
+
+### 5.5 — `have_use_flag` validava contra o slot errado
+
+**Sintoma:** `o USE flag 'wayland' NAO existe no IUSE de 'dev-cpp/gtkmm' nesta
+versao da arvore` — sobre um flag que existe.
+
+**Causa raiz:** `portageq best_visible / dev-cpp/gtkmm` resolve para o slot
+**4.0** (IUSE: `gtk-doc test`). O waybar precisa do **3.0** (IUSE inclui
+`wayland`). Sem slot no atom, a validacao consultava o pacote errado e reprovava
+com uma mensagem que parece dizer o oposto do que acontece.
+
+**Correcao, duas partes:**
+
+1. Atom com slot (`dev-cpp/gtkmm:3.0`) no `_use_line`.
+2. O `have_use_flag` passa a **avisar** quando o atom nao declara SLOT e o slot
+   resolvido nao e o default `0`. Heuristica, nao prova — mas cobre o caso real
+   e transforma um erro enganoso num aviso que aponta para a causa. Aviso e nao
+   erro porque quem quer o slot que o Portage escolheu esta certo.
+
+A mensagem do `die` do `_use_line` tambem passou a mencionar slots.
+
+### 5.6 — cadeia waybar: quatro USE faltando + colisao de slot no cairo
+
+**Sintoma:** sequencia de falhas de autounmask, culminando em
+`Multiple package instances within a single package slot ... slot conflict:
+x11-libs/cairo:0`.
+
+**Causa raiz:** tres sub-cadeias distintas do `gui-apps/waybar`:
+
+| Puxa | Exige |
+|---|---|
+| `gtk-layer-shell` | `gtk+[wayland,-X]` |
+| `libayatana-appindicator` (via `waybar[tray]`) | `libdbusmenu[gtk3]` |
+| `cairomm -> pangomm -> gtkmm:3.0` | `mesa[wayland]`, `cairo[-X]` |
+
+O ultimo colide de frente com o `cairo[X]` que a cadeia do portal GNOME (5.3)
+exige. Duas cadeias, dois requisitos opostos, mesmo slot.
+
+**Correcao:** `x11-libs/gtk+ wayland -X`, `dev-libs/libdbusmenu gtk3`,
+`media-libs/mesa wayland`, `dev-cpp/cairomm X`, e `x11-libs/cairo X aqua` — o
+`aqua` e a saida que o proprio Portage sugere para a colisao.
+
+**Uma linha, nunca duas.** Declarar `cairo X` e `cairo -X` separadamente
+reproduziria o conflito por escrito. Ha uma asercao contando as ocorrencias.
+
+> **A licao estrutural.** O item da auditoria do Ciclo 2 ja tinha visto
+> `cairo[X]` entrar por outra cadeia — `nvidia-drivers[tools]` →
+> `gtk+` → `librsvg` → `cairo`. Agora ela entrou por duas cadeias novas. Cacar
+> cadeia por cadeia nao escala: cada combinacao de `DESKTOP_*` produz um
+> conjunto diferente, e o unico jeito de descobrir e compilando.
+>
+> **Recomendacao (nao implementada):** uma sub-etapa de validacao que rode
+> `emerge -pq --autounmask=y` sobre a lista completa **antes** do emerge real e
+> parseie a saida. Ela transformaria horas de compilacao interrompida em
+> segundos de relatorio, e nao dependeria de alguem prever a arvore. Fica
+> registrada como divida.
+
+### 5.7 — `13-audio-user-services`: probe cobrando um init script impossivel
+
+**Sintoma:** `'/etc/init.d/pipewire' nao existe - pulando`, seguido de
+`do_fn terminou mas o probe ainda reporta nao-feito`.
+
+**Causa raiz:** com OpenRC ≥ 0.60 o `do_fn` tomava a rota "servicos de usuario"
+e rodava `rc-update add -U pipewire`. Mas o modulo define
+`media-video/pipewire ... -system-service` — e esta **certo** em faze-lo: o
+proprio ebuild marca `system-service` como "Not recommended", e em OpenRC o
+PipeWire e servico de usuario. So que com essa flag o ebuild **nao instala init
+script nenhum**, nem de sistema nem de usuario.
+
+As duas premissas do script colidiam: *"OpenRC ≥ 0.60 ⇒ servicos de usuario
+disponiveis"* e falso quando nao ha init script para habilitar.
+
+**Correcao, duas partes:**
+
+1. `probe_audio_user_services()` ganha um terceiro caminho: sem init script, a
+   rota so pode ser o launcher — reporta feito **se** o marker ja disser
+   `launcher`, e nao-feito se ainda nao disser. Exigir o marker importa: e ele
+   que faz o `14` declarar o `spawn-at-startup` no `config.kdl`.
+2. `do_audio_user_services()` passa a exigir as **duas** condicoes
+   (`openrc_version_ge 0.60 && svc_script_exists pipewire`) e cai no launcher
+   caso contrario, reportando qual das duas faltou — a acao corretiva difere.
+
+As duas rotas sao mutuamente exclusivas: declarar ambas faria o PipeWire subir
+duas vezes.
+
+> O cabecalho do proprio `13-services.sh` (linhas 35-37) ja documentava que nao
+> existe servico de sistema para o PipeWire. **A logica do `do_fn` nao seguia o
+> proprio comentario do arquivo.**
+
+### 5.8 — `gsettings` sem sessao D-Bus: backend em memoria
+
+**Sintoma:** `o valor de 'color-scheme' foi gravado mas a releitura devolveu
+'default' em vez de 'prefer-dark'`.
+
+**Causa raiz:** `run_as_user gsettings set/get` roda a partir de um shell de root
+**sem barramento de sessao**. Sem D-Bus o dconf cai num backend em memoria: o
+comando sai com 0 e o valor evapora ao fim do processo.
+
+O `gsettings_set_checked()` ja detectava isso — foi por isso que o erro apareceu
+em vez de virar uma configuracao silenciosamente perdida. **O verificador
+funcionou como projetado; o que faltava era a sessao.**
+
+**Correcao:** `run_as_user dbus-run-session gsettings ...` nas duas helpers.
+
+**Segundo defeito, descoberto ao aplicar o primeiro:** com `dbus-run-session`, o
+`dbus-daemon` emite linhas proprias que contaminam a captura, e a comparacao
+passa a falhar com `''prefer-dark'' != 'prefer-dark'` — aspas duplicadas, o que
+parece bug de formato e nao e. Correcao: `| tail -1` no `gsettings_get`.
+
+### 5.9 — `XDG_RUNTIME_DIR` no `.bash_profile`, mas o shell do usuario e zsh
+
+**Sintoma:** o niri morre com
+
+```
+panicked at src/niri.rs: called `Result::unwrap()` on an `Err` value: RuntimeDirNotSet
+```
+
+Exportando a variavel a mao, o erro vira `Unable to set up transient service
+directory: XDG_RUNTIME_DIR "/run/user/1000" not available: No such file or
+directory`.
+
+**Causa raiz:** o `13-xdg-runtime-dir` acrescenta um bloco **bem construido**
+(export + verificacao de dono/permissao + `mkdir`/`chmod 0700`) ao
+`~/.bash_profile`. O `/etc/local.d/create-runuser.start` cria corretamente so o
+diretorio **pai** (`/run/user`, sticky 1777) — por design, e o trecho no perfil
+do usuario que cria `/run/user/$UID`.
+
+Mas o `14-dotfiles.sh` configura **zsh** como shell do usuario, e o zsh nao le
+`.bash_profile`. O diretorio nunca era criado no login, e a sessao grafica nao
+subia.
+
+**As duas etapas discordavam sobre qual shell o usuario tem — e a `13` roda
+antes da `14`.** Consultar o shell atual no momento da `13` tambem nao resolve:
+naquele instante o shell ainda e o bash.
+
+**Correcao:** `_xdg_profile_files()` devolve os arquivos de perfil do shell
+**efetivo de agora** (`getent passwd`) **e** do que a `14` vai configurar
+(`DESKTOP_SHELL`) — `.zprofile` para zsh, `.bash_profile` para bash, `.profile`
+como fallback. Quando coincidem, e um arquivo so. O trecho e idempotente, entao
+estar em dois arquivos nao causa dano, e apenas um e lido por login.
+
+**Gravidade: alta.** E a diferenca entre a sessao grafica subir e nao subir, e o
+sintoma — um panic de Rust — nao aponta para o shell em lugar nenhum.
+
+**Teste:** 4 asercoes, incluindo a coerencia entre o shell que a `14` configura
+e o perfil que a `13` escreve.
+
+---
+
+### O que NAO da para guardar com teste estatico
+
+Quatro dos nove defeitos deste ciclo nao tem asercao, e o motivo importa mais
+que o numero:
+
+| Defeito | Por que nenhum teste de host o pegaria |
+|---|---|
+| Colisao de slot do cairo (5.6) | So existe no grafo de dependencias que o Portage resolve **com a arvore instalada**. Um teste pode conferir que escrevemos **uma** linha de cairo — e confere — mas nao que o conjunto de flags fecha. Isso exige `emerge -p` numa maquina Gentoo real |
+| Backend em memoria do dconf (5.8) | Depende da presenca de um barramento D-Bus em runtime. Um teste estatico ve `dbus-run-session` no codigo — e ve — mas nao que o dconf persiste |
+| Init script ausente por USE flag (5.7) | Qual arquivo um ebuild instala e funcao das USE flags **e** da versao do ebuild na arvore. So o emerge sabe |
+| `iwd` em `crashed` (5.1) | O teste confere que os simbolos estao no fragmento. Que **esses** sejam os simbolos certos veio de rodar `iwd -d` no hardware |
+
+Em todos, a asercao que existe guarda a **forma** da correcao, nao o
+comportamento. E o teto do que analise estatica alcanca, e vale enunciar: um
+teste verde aqui significa "a correcao continua escrita", nunca "o problema
+continua resolvido".
 
 ---
 
@@ -662,5 +943,5 @@ completo com boot. O ext4 continua com dois.
 
 | | |
 |---|---|
-| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 481 asercoes. Nao validada em bare metal nem com btrfs |
+| Base | **Alta** — dois ciclos completos + boot, dez bugs corrigidos, 512 asercoes. Nao validada em bare metal nem com btrfs |
 | Desktop | **Baixa, inalterada** — nunca executado. Esta rodada melhorou consistencia e cobertura de teste; nao substitui execucao |

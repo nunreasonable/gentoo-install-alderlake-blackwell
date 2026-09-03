@@ -3,7 +3,8 @@
 Escrito para ser lido **do telefone**, quando a máquina de trabalho não existir
 mais. Diz onde as coisas pararam, o que fazer a seguir e como sair do buraco.
 
-Última atualização: 2026-09-02 — após o Ciclo 3 fechar: **btrfs bootou**.
+Última atualização: 2026-09-02 — após o **bare metal** instalar, bootar e
+rodar o módulo `desktop/` até uma sessão niri sob Wayland.
 
 ---
 
@@ -11,36 +12,43 @@ mais. Diz onde as coisas pararam, o que fazer a seguir e como sair do buraco.
 
 | | |
 |---|---|
-| Instalador `00`–`06` | **Três instalações completas em QEMU + boot** (OpenRC): duas ext4, uma btrfs |
+| Instalador `00`–`06` | 3 ciclos QEMU + boot, e **1 no bare metal** + boot (btrfs) |
 | `ROOT_FS=btrfs` | **Instalou e bootou** (2026-09-02, após corrigir `block-group-tree`) |
-| Módulo `desktop/` (niri) | Escrito, **nunca executado** |
-| Bare metal | **Nunca** |
-| WiFi (`iwd`) no sistema instalado | Implementado, **nunca executado** |
+| Módulo `desktop/` (niri) | **Executado no bare metal**, 9 bugs corrigidos, sessão niri rodando. Nunca rodou limpo |
+| Bare metal | **Feito** (2026-09-02) — com intervenção manual em 8 pontos |
+| WiFi (`iwd`) no sistema instalado | **Funcionando**, após corrigir 4 símbolos de cripto no kernel |
 
-Suíte do host: `./tests/run-tests.sh` → 481 asserções. Testes estáticos não
+Suíte do host: `./tests/run-tests.sh` → 512 asserções. Testes estáticos não
 provam boot.
 
 ---
 
 ## O plano
 
-**1. Bare metal.** A VM já não tem mais nada a provar: três instalações
-completas, três boots, ext4 e btrfs. O que falta só existe no hardware real —
-NVIDIA Blackwell carregando de verdade, WiFi AX210, firmware da placa.
+**1. Uma execução limpa, do zero, com o código atual.** É o único teste que
+falta e o mais importante: nada neste projeto jamais rodou sem intervenção
+manual no meio. Os 9 bugs do ciclo bare metal já estão corrigidos no repo, mas
+nenhum deles foi *reexecutado* — a correção foi escrita durante a instalação.
 
 ```sh
 cd ~/gentoo-install-alderlake-blackwell && git pull
-# confira o disco ANTES (nomes de kernel mudam entre boots):
-lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
-sudo ROOT_FS=btrfs ./install.sh
+./install.sh --reset --repartition       # base
+sudo ./desktop/install-desktop.sh        # desktop, após bootar
 ```
 
-`ROOT_FS` **não fica gravado**: repita a variável em toda execução, inclusive
-nas retomadas. O `TARGET_DISK` do `vars.sh` está em `/dev/nvme0n1` (o disco de
-dados, 465.8G, vazio) — confirme que ainda é esse o nome antes do `ERASE`.
+Se essa passar sem intervenção, o projeto vira reprodutível. Se não passar, o
+que quebrar é a próxima coisa a corrigir.
 
-**2. `desktop/`** — só depois do bare metal bootar. Ele instala um compositor
-Wayland com NVIDIA proprietário, que é o pedaço que nenhuma VM valida.
+**2. Áudio.** Nunca foi testado. O PipeWire está na rota `launcher`
+(`spawn-at-startup` no `config.kdl`), então:
+
+```sh
+pactl info                    # tem de responder, não dar erro de conexão
+wpctl status                  # tem de listar dispositivos
+speaker-test -c2 -twav        # o teste que importa
+```
+
+**3. Suspend/resume, carga, térmica.** Nada disso foi exercitado.
 
 ---
 
