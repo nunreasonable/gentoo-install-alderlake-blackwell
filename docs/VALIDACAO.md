@@ -14,15 +14,27 @@ leitura de codigo.
 | | |
 |---|---|
 | Ciclos completos em QEMU/OVMF | **3** (instalacao ponta a ponta + boot) — 2 em ext4, 1 em btrfs |
-| Instalacoes em **bare metal** | **1 completa + boot** (2026-09-02), seguida do modulo `desktop/` |
-| Bugs encontrados por execucao | **23** (22 no codigo, 1 de ergonomia) |
-| Bugs encontrados por analise estatica | **0** dos 23 acima |
-| Suite de testes do host | 11 grupos, **596 asercoes**, exit 0 |
-| Validado em hardware fisico | Base + `desktop/`, **uma execucao**, com intervencao manual em 8 pontos |
+| Instalacoes em **bare metal** | **1 completa + boot** (2026-09-02), seguida do modulo `desktop/` e da etapa 16 (2026-09-03) |
+| Bugs encontrados por execucao | **35** (34 no codigo, 1 de ergonomia) |
+| Bugs encontrados por analise estatica | **0** dos 35 acima |
+| Suite de testes do host | 13 grupos, **642 asercoes** |
+| Validado em hardware fisico | Base + `desktop/` + etapa 16, **uma execucao cada**, com intervencao manual em 20 pontos |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
 auditoria adversarial multi-agente de 13 dimensoes passaram por cima de **todos
-os vinte e tres**. Cada um exigiu executar o codigo.
+os trinta e cinco**. Cada um exigiu executar o codigo.
+
+Duas ressalvas sobre a linha da suite, para ela nao virar promessa:
+
+- O grupo **ShellCheck** so roda se `shellcheck` ou `podman` existirem. Na
+  maquina onde estes numeros foram medidos (o proprio alvo instalado) **nenhum
+  dos dois existe**, e o runner pulou o grupo anunciando `SKIP`.
+- O grupo **test-desktop-dryrun** reprova neste host com
+  `dry-run criou arquivo REAL fora do sandbox: /etc/portage/package.use/desktop-niri`.
+  E falso positivo, e o proprio teste avisa: *"estes caminhos existiam antes? se
+  sim, o teste e inconclusivo neste host"*. O arquivo e da instalacao real, de
+  2026-09-03. **A suite so fecha em exit 0 num host que nao seja o alvo
+  instalado** — vale dizer isso em vez de repetir "exit 0" sem qualificacao.
 
 ---
 
@@ -622,26 +634,388 @@ continua resolvido".
 
 ---
 
+## Ciclo 6 — etapa 16 (Clavis Shell) no bare metal (2026-09-03)
+
+Primeira execucao da etapa `16-clavis.sh` em qualquer ambiente. Ela e opt-in
+(`DESKTOP_CLAVIS=yes`) e instala o Clavis Shell: quickshell + key-cli + keytop.
+
+**A etapa NAO rodou limpa.** Ela chegou ao fim, mas com intervencao manual em
+doze pontos, cada um exigindo editar o script no meio da instalacao. O Clavis
+compila, instala e sobe — `qs -c clavis` roda na sessao — e nada disso foi
+obtido com o codigo como estava escrito.
+
+Sete dos doze defeitos sao a mesma classe: USE flag ou keyword nao declarada,
+descoberta uma a uma pelo autounmask. Dois sao de escrita a mao em arquivo
+gerado. Um e de glob. Um e de variavel de ambiente que nao existia em lugar
+nenhum do repositorio.
+
+### 6.1 — `qtdeclarative[vulkan]`: conflito de USE com o qtbase
+
+**Sintoma:**
+
+```
+emerge: there are no ebuilds built with USE flags to satisfy
+"dev-qt/qtbase-6.11.1:6[accessibility=,gui,network=,opengl=,sql?,ssl?,vulkan=,widgets=]"
+- dev-qt/qtbase-6.11.1 (Change USE: -vulkan)
+- dev-qt/qtdeclarative-6.11.1-r1 (Change USE: +vulkan)
+```
+
+**Causa raiz:** o atom usa `vulkan=`, que obriga qtbase e qtdeclarative a terem
+o **mesmo valor** da flag. O script declarava `dev-qt/qtbase:6 dbus vulkan`
+porque o quickshell exige, e nao declarava nada para o qtdeclarative. As duas
+sugestoes do Portage sao mutuamente exclusivas, e so uma preserva o requisito
+do quickshell.
+
+**Correcao:** `_use_line_clavis dev-qt/qtdeclarative:6 vulkan`.
+
+**Teste:** asercao conferindo `dev-qt/qtdeclarative:6 .*vulkan` em
+`gen_clavis_use`.
+
+### 6.2 — `libxkbcommon[X]`
+
+**Sintoma:** `>=x11-libs/libxkbcommon-1.13.2 X`, exigido pela cadeia do
+`qtbase[X]`.
+
+**Correcao:** `_use_line_clavis x11-libs/libxkbcommon X`.
+
+**Teste:** nenhum especifico — coberto pela asercao geral de que toda linha
+passa por `have_use_flag`.
+
+### 6.3 — `cpptrace` mascarado por keyword
+
+**Sintoma:**
+
+```
+All ebuilds that could satisfy "dev-cpp/cpptrace[unwind]" have been masked.
+- dev-cpp/cpptrace-1.0.4-r1::gentoo (masked by: ~amd64 keyword)
+(dependency required by "gui-apps/quickshell-0.3.0-r1::guru[crash-handler]")
+```
+
+**Causa raiz:** `crash-handler` e flag **default** do quickshell e puxa o
+cpptrace, que so existe em `~amd64`. O `gen_clavis_keywords()` listava dois
+atoms: `gui-apps/quickshell` e `>=media-sound/libcava-1.0.0`.
+
+**Correcao:** `dev-cpp/cpptrace ~amd64` no gerador de keywords.
+
+### 6.4 — cascata: `cpptrace[unwind]` puxa `libdwarf`, tambem mascarado
+
+**Sintoma:** destravado o cpptrace, veio `>=dev-cpp/cpptrace-1.0.4-r1 unwind`;
+e o `cpptrace[unwind]` puxou `dev-libs/libdwarf:=`, com 2.3.1, 2.3.0 e 2.2.0
+todas mascaradas.
+
+**Causa raiz:** o efeito cascata de trazer um pacote de testing. **Cada
+dependencia nova traz a propria exigencia**, e a cascata so termina quando o
+emerge para de reclamar — nao da para ler o ebuild e prever onde acaba.
+
+**Correcao:** `dev-libs/libdwarf ~amd64` nas keywords e
+`_use_line_clavis dev-cpp/cpptrace unwind` nas USE.
+
+**Alternativa considerada e rejeitada:** `quickshell[-crash-handler]` cortaria
+cpptrace e libdwarf de uma vez. Foi rejeitada porque o Clavis e um componente
+novo, e perder stack trace justamente no que ainda vai quebrar e o pior
+momento para economizar dois pacotes.
+
+**Teste:** asercao exigindo cpptrace **e** libdwarf juntos em
+`gen_clavis_keywords` — declarar so o topo da cascata para o emerge no degrau
+seguinte.
+
+### 6.5 — `qtbase[opengl,wayland]`
+
+**Sintoma:** `>=dev-qt/qtbase-6.11.1 opengl wayland`, exigido por
+`dev-qt/qtwayland-6.11.1`, que entra por `quickshell[wayland]`.
+
+**Correcao:** `_use_line_clavis dev-qt/qtbase:6 opengl wayland`.
+
+**Teste:** asercao dedicada.
+
+### 6.6 — o NetworkManager puxando `wpa_supplicant` num sistema `iwd`
+
+**Sintoma:** `>=net-wireless/wpa_supplicant-2.11-r4 dbus`, exigido por
+`net-misc/networkmanager-1.56.0[wifi,-iwd]`, que entra por
+`quickshell[networkmanager]`.
+
+**Causa raiz:** este sistema usa **iwd** como backend de Wi-Fi, configurado nas
+etapas base. O NetworkManager com `-iwd` traz o wpa_supplicant como backend, e
+passariam a existir dois gerenciadores disputando a mesma interface. Nao e erro
+de compilacao: e um defeito de runtime que so apareceria depois, no Wi-Fi.
+
+**Correcao:** `_use_line_clavis net-misc/networkmanager iwd`. Com a flag, o
+wpa_supplicant sai da arvore de dependencias.
+
+**Alternativa considerada e rejeitada:** `quickshell[-networkmanager]`, que
+cortaria o widget de rede da shell.
+
+**Teste:** asercao dedicada — este e o defeito deste ciclo com maior custo se
+reintroduzido, porque nao falha na instalacao.
+
+### 6.7 — `qtdeclarative[opengl]`
+
+**Sintoma:** `>=dev-qt/qtdeclarative-6.11.1-r1 opengl`, exigido por
+`gui-apps/quickshell::guru`. Mesma cadeia do 6.5.
+
+**Correcao:** `_use_line_clavis dev-qt/qtdeclarative:6 opengl`.
+
+### 6.8 — `qttools[widgets]` contra o `REQUIRED_USE` do qtbase
+
+**Sintoma:** contradicao direta, os dois lados simultaneos:
+
+```
+# required by dev-qt/qttools-6.11.1::gentoo[widgets]
+>=dev-qt/qtbase-6.11.1 -opengl
+```
+
+```
+The following REQUIRED_USE flag constraints are unsatisfied:
+    wayland? ( opengl )
+```
+
+**Causa raiz:** `qttools[widgets]` exige `qtbase[-opengl]`; `qtbase[wayland]`
+exige `opengl`. O script declarava so `dev-qt/qttools:6 linguist` — o Clavis
+usa o componente Qt6 LinguistTools, que fornece o `lrelease` — e deixava
+`widgets` no default ligado.
+
+**A primeira tentativa nao bastou.** Desligar so `widgets` produziu um segundo
+erro, agora do REQUIRED_USE do proprio qttools: `assistant? ( widgets )`.
+
+**Correcao:** a linha existente virou
+`_use_line_clavis dev-qt/qttools:6 linguist -widgets -assistant`.
+
+**Teste:** asercao exigindo os **dois** negativos. Guardar so `-widgets`
+deixaria passar exatamente a tentativa que falhou.
+
+### 6.9 — check de artefato com glob raso; o Qt6 instala em subdiretorios
+
+**Sintoma:** o build foi ate `[261/262]` com sucesso, e mesmo assim:
+
+```
+a compilacao terminou mas nenhum .so apareceu em
+'/home/daeese/src/clavis-shell/build/qml/Clavis'.
+```
+
+O `find` confirmava os artefatos, cada um num subdiretorio:
+
+```
+build/qml/Clavis/DesktopCards/libClavisDesktopCards.so
+build/qml/Clavis/Weather/libClavisWeather.so
+build/qml/Clavis/Niri/libClavisNiri.so
+build/qml/Clavis/Cava/libClavisCava.so
+```
+
+**Causa raiz:** o Qt6 instala modulos QML em **um subdiretorio por modulo**
+(`qml/Clavis/<Modulo>/`), e os tres checks usavam `compgen -G ".../*.so"`, que
+so olha um nivel.
+
+**O check estava certo, o teste e que era estreito.** Ele protege contra uma
+falha silenciosa real: o `cmake --install` deste upstream copia da build-tree
+(nao ha `install(TARGETS)`), entao instalar sem artefato produziria um
+diretorio vazio **saindo com 0**. A ideia continua necessaria; o alcance do
+glob e que estava errado.
+
+**Correcao:** os tres lugares — `do_clavis_build`, `probe_clavis_build` e
+`probe_clavis_build_artifacts_or_die` — passaram a usar
+`find "$dir" -name '*.so' -print -quit`.
+
+> **Erro cometido durante a propria correcao.** A primeira tentativa omitiu a
+> aspa dupla de fechamento depois de `Clavis/`, e o `bash -n` acusou erro de
+> sintaxe perto de `}` procurando o `)` correspondente, na linha 386 — o
+> parentese de `$(` nunca fechava. A regra do `AGENTS.md` de rodar `bash -n`
+> depois de qualquer edicao ja existia; ela foi violada e cobrou o preco na
+> hora. Fica registrado porque uma regra so vale depois de doer.
+
+**Teste:** duas asercoes — nenhuma ocorrencia de `compgen -G` em check de
+artefato QML, e **tres** ocorrencias de `find ... -print -quit`. A contagem
+importa: corrigir dois dos tres lugares deixaria o probe reprovando um build
+bom.
+
+### 6.10 — `qt5compat` ausente, e depois presente com a flag QML desligada
+
+**Sintoma:** build e install passaram; `quickshell -c clavis` falhou:
+
+```
+ERROR: Failed to load configuration
+ERROR:   caused by @shell.qml[8:5]: Type AppShell unavailable
+...
+ERROR:   caused by @Modules/SystemCards/SystemBatteryTank.qml[4:1]:
+         module "Qt5Compat.GraphicalEffects" is not installed
+```
+
+**Causa raiz, em duas partes.** A primeira: `dev-qt/qt5compat` nao estava na
+lista `CLAVIS_DEPS` da sub-etapa `16-clavis-deps`. A segunda, mais traicoeira:
+instalado a mao, ele veio com `USE="gui -custom-cflags -icu -qml -test"`. A
+flag `qml` **nao e default**, e e ela que instala o modulo QML. Sem ela, so a
+lib C++ (`libQt6Core5Compat.so`) e instalada.
+
+**A licao.** No Gentoo os plugins QML do Qt6 ficam atras de USE flags. Um
+`module "X" is not installed` do QML significa **tanto** "pacote ausente"
+**quanto** "pacote presente com a flag QML desligada" — e os dois produzem
+exatamente a mesma mensagem. Diagnosticar pelo texto do erro leva ao lugar
+errado metade das vezes.
+
+**Correcao:** `dev-qt/qt5compat:6` em `CLAVIS_DEPS` e
+`_use_line_clavis dev-qt/qt5compat:6 qml` nas USE.
+
+**Teste:** duas asercoes — o pacote em `CLAVIS_DEPS` e a flag em
+`gen_clavis_use`. As duas, porque cada uma sozinha reproduz um dos dois casos.
+
+### 6.11 — correcoes escritas a mao no arquivo GERADO
+
+**Sintoma:** nenhum, e e esse o problema. Descoberto auditando a maquina
+instalada um dia depois, comparando o `/etc/portage/package.use/clavis` real
+com o que o gerador do repositorio produz.
+
+**Causa raiz:** parte das correcoes foi aplicada direto no arquivo gerado, em
+vez de no `gen_clavis_use()` que o produz. Tres consequencias:
+
+1. **`dev-qt/qt5-compat qml`** — atom que **nao existe**; o nome do pacote e
+   `qt5compat`, sem hifen. Ficou no arquivo como no-op silencioso, ao lado da
+   linha correta. Escrita pelo gerador, essa linha nunca teria passado: o
+   `have_atom` do `_use_line_clavis` morreria com mensagem nomeando o atom.
+   **A validacao existia e foi contornada por escrever fora dela.**
+2. **`app-misc/brightnessctl`** (USE `udev` e keyword `~amd64`) entrou pelo
+   mesmo caminho, e o pacote esta instalado. Nao estava em `CLAVIS_DEPS` nem
+   nos geradores.
+3. **Tudo isso seria apagado.** O `write_managed_file` reescreve o arquivo
+   inteiro quando o gerador muda, e o `probe_clavis_use` compara byte a byte
+   com a saida de `gen_clavis_use`. A proxima execucao da etapa 16 apagaria as
+   correcoes e o shell voltaria a nao subir — **sem erro nenhum na instalacao**,
+   porque o defeito so aparece quando o QML carrega.
+
+**Correcao:** tudo migrado para os geradores; `dev-qt/qt5compat:6` com slot
+(verificado: o SLOT real e `6/6.11.1`, e `portageq best_visible / dev-qt/qt5compat:6`
+resolve — nao e o caso do qtkeychain, que e `0/1`).
+
+**Teste:** asercao recusando a string `qt5-compat` em qualquer lugar do script.
+
+### 6.12 — `QT_QPA_PLATFORM` nao existia em lugar nenhum do repositorio
+
+**Sintoma:** com tudo compilado e instalado, `quickshell -c clavis` falhava com
+
+```
+This application failed to start because no Qt platform plug-in could be
+initialized. Reinstalling the application may fix this problem.
+```
+
+**O que foi descartado por inspecao:** `/usr/lib64/qt6/plugins/platforms/`
+contem `libqwayland.so` e `libqxcb.so`; `wayland-shell-integration/` contem
+`libxdg-shell.so`, `libqt-shell.so` e outros tres. Os plugins **estao todos
+instalados**. As hipoteses de integracao xdg-shell ausente e de inconsistencia
+entre qtbase e qtwayland apos os varios rebuilds estao eliminadas.
+
+**Causa raiz:** o `QT_QPA_PLATFORM=wayland` nao e declarado em nenhum ponto do
+instalador — `grep -rn QT_QPA_PLATFORM` no repositorio inteiro so encontra uma
+mencao a `QT_QPA_PLATFORMTHEME`, dentro de um comentario. O `niri_config_content()`
+da etapa 14 nao gerava bloco `environment`.
+
+**O mecanismo exato nao foi isolado.** A suspeita e o Qt eleger o backend `xcb`
+por causa do `DISPLAY` que o `xwayland-satellite` exporta, mas isso **nao foi
+comprovado**. O que esta registrado e o efeito: com a variavel declarada, a
+shell sobe.
+
+**Correcao:** bloco `environment { QT_QPA_PLATFORM "wayland" }` no
+`niri_config_content()` da `14-dotfiles.sh` — nao na 16, porque a variavel
+serve todo aplicativo Qt da sessao e a etapa 16 e opt-in. A 14 roda antes da 16.
+
+**Teste:** asercao conferindo a linha no `niri_config_content`. Ela guarda a
+**forma**; que o Qt inicialize, so a sessao real diz.
+
+### Observacao: duas sub-etapas de rede falharam por DNS (nao e bug)
+
+`16-key-cli` e `16-keytop` falharam na mesma execucao, pela mesma causa:
+
+```
+fatal: unable to access 'https://github.com/StatIndet/keytop/':
+Could not resolve host: github.com (Timeout while contacting DNS servers)
+```
+
+O DNS do roteador engasgou. Nao ha defeito de codigo: as duas sub-etapas fazem
+rede (`pip install` de URL git e `git fetch`) e nao sao idempotentes contra
+falha de resolucao. O re-run passou. Procedimento e fallback de DNS em
+[ARMADILHAS.md](ARMADILHAS.md), secao 21.
+
+O `16-keytop` se comportou **exatamente como projetado**: a falha nao derrubou
+a etapa, o marker gravou `skipped` e o operador foi avisado. Como o
+`probe_keytop` trata `skipped` como terminal, ele nao insiste — o `keytop`
+desta maquina foi instalado a mao depois, em `/usr/local/bin/keytop`, e o marker
+continua dizendo `skipped`. Marker e reality divergem, e nesse caso sem
+consequencia: o probe reporta feito nos dois ramos. Fica registrado como
+observacao, nao como defeito.
+
+### A mesma classe, pela segunda vez
+
+Sete dos doze defeitos deste ciclo (6.1 a 6.8, tirando o 6.3/6.4 que sao um so
+em duas etapas) sao USE flags e keywords nao declaradas, cada uma descoberta
+quando o emerge parou e sugeriu `--autounmask-write`. Isso ja tinha acontecido
+no Ciclo 5, item 5.6, e la ficou registrada a recomendacao:
+
+> uma sub-etapa de validacao que rode `emerge -pq --autounmask=y` sobre a lista
+> completa **antes** do emerge real e parseie a saida.
+
+O Ciclo 6 e a segunda ocorrencia, agora com um agravante: entre uma parada do
+emerge e a seguinte houve compilacao de Qt inteiro. O custo nao e so de tempo
+de quem opera — e de horas de CPU jogadas fora entre descobertas que um
+`emerge -p` daria em segundos.
+
+**A recomendacao deixa de ser divida registrada e passa a ser o proximo item de
+trabalho da etapa 16.** Ela nao depende de prever a arvore, que e justamente o
+que nao funciona: as duas tentativas de prever falharam do mesmo jeito.
+
+### O que NAO da para guardar com teste estatico — Ciclo 6
+
+| Defeito | Por que nenhum teste de host o pegaria |
+|---|---|
+| `REQUIRED_USE` entre qtbase e qttools (6.8) | A contradicao so existe no grafo que o Portage resolve **com a arvore instalada**. Um teste confere que escrevemos `-widgets -assistant` — e confere — nao que o conjunto fecha |
+| Cascata de keywords cpptrace → libdwarf (6.4) | Cada dependencia nova de um pacote em testing traz a propria exigencia. Onde a cascata termina e funcao da arvore no dia; so o `emerge` sabe |
+| "pacote ausente" vs "flag QML desligada" (6.10) | As duas situacoes produzem a **mesma** mensagem de erro do QML. Distinguir exige inspecionar o que o ebuild instalou, com as USE daquela maquina |
+| `QT_QPA_PLATFORM` (6.12) | A asercao confere que a linha esta escrita. Que o Qt inicialize o plugin depende do ambiente da sessao em runtime |
+
+O padrao se repete e vale reafirmar: a asercao guarda a **forma** da correcao,
+nunca o comportamento. Verde aqui significa "a correcao continua escrita".
+
+---
+
 ## O que continua sem validacao
+
+Esta tabela estava desatualizada: ela listava "boot em bare metal", "runtime do
+NVIDIA" e "Alder Lake real" como nunca executados, coisas que os Ciclos 3, 4 e 5
+ja tinham feito. Corrigida em 2026-09-04 contra os artefatos da propria maquina
+instalada — `/var/lib/gentoo-install/state/`, os logs em
+`/var/log/gentoo-install/` e o sistema em execucao.
 
 | | Por que |
 |---|---|
-| Boot em **bare metal** | Nunca executado |
-| **Runtime** do NVIDIA (carga do modulo, firmware GSP, modeset) | QEMU sem passthrough PCI nao tem GPU NVIDIA. O Ciclo 2 validou o **build**, nao o funcionamento |
-| NVRAM do firmware **ASUS 1836** | OVMF nao e o firmware da ASUS |
-| Alder Lake real (ITMT, Thread Director, `intel_pstate`/`intel_idle`) | A VM expoe 6 vCPUs homogeneas, nao 6P+4E |
-| NVMe fisico, rede e audio da B760M-E | Dispositivos virtio na VM |
-| Suspend/resume | Nunca executado |
-| Instalacao limpa com o codigo atual, sem intervencao | Nunca executada |
+| Instalacao limpa com o codigo atual, sem intervencao | Nunca executada. **Continua sendo o teste que falta**, e agora com uma divida a mais: as doze correcoes do Ciclo 6 foram escritas durante a instalacao e nenhuma foi reexecutada |
+| Etapa 16 rodando **limpa** | Nunca. Ela chegou ao fim, com intervencao manual em doze pontos |
 | Etapa `06-sudo` | Primeira execucao no bare metal falhou e foi corrigida (ver Ciclo 4); a versao corrigida ainda **nao rodou** |
+| `keytop` instalado **pela etapa 16** | A sub-etapa falhou por DNS e gravou `skipped`. O binario existe em `/usr/local/bin/keytop`, instalado a mao depois — fora do modelo do instalador |
+| NVRAM do firmware **ASUS 1836** | Comportamento de retencao da entrada de boot ao longo do tempo; ver ARMADILHAS secao 7 |
+| Suspend/resume | Nunca executado |
 | Branch `INIT_SYSTEM=systemd` | Nunca executado |
+| Reinstalacao sobre esta instalacao | O disco de dados segue intacto e a decisao de reparticionar continua em aberto |
+
+O que **deixou** de estar nesta lista, e com que evidencia:
+
+| Antes listado como nao validado | Evidencia que o tirou daqui |
+|---|---|
+| Boot em bare metal | Ciclos 3 e 4, com boot confirmado. A maquina onde este texto foi escrito e ela |
+| Runtime do NVIDIA (modulo, GSP, modeset) | Sub-etapas `11-modeset-check` e `11-egl-libs-check` marcadas no state; sessao Wayland com o driver 595.91.07 na RTX 5060 Ti, e Vulkan em uso por aplicacao real |
+| Alder Lake real, NVMe fisico | O sistema roda no i5-12600K e no NVMe desde 2026-09-02 |
+| Audio da B760M-E | PipeWire 1.6.8 com WirePlumber respondendo ao `wpctl status`, com clientes conectados |
+
+Nenhuma dessas linhas afirma que a **etapa** que as configura roda limpa — so
+que o resultado existe nesta maquina. A distincao e a mesma do resto do
+documento: o sistema funcionar nao prova que o codigo que o produziu esta certo,
+porque houve intervencao manual no caminho.
 
 ---
 
 ## Suite de testes do host
 
-`./tests/run-tests.sh` — **596 asercoes**, exit 0. Nenhum teste particiona,
-monta, baixa ou compila.
+`./tests/run-tests.sh` — **642 asercoes**. Nenhum teste particiona, monta,
+baixa ou compila.
+
+O numero estava defasado neste documento: dizia 596 quando a suite ja media 630,
+antes das 12 asercoes do Ciclo 6. Contagem escrita a mao envelhece sem avisar —
+a de agora foi medida somando as linhas `-> N pass` do runner.
 
 | Grupo | Asercoes | Cobre |
 |---|---|---|

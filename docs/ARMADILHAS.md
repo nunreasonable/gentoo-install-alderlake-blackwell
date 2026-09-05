@@ -8,15 +8,16 @@ Le-se na ordem. As secoes 1–4 sao **antes de rodar o instalador**, as 5–7 sa
 **antes do primeiro reboot**, as 8–12 sao **no primeiro boot**, as 13–15 sao
 **recuperacao e limpeza** (retomar apos falha, hashes de senha que sobram,
 retomar com outra versao do instalador). A 16 e especifica de **btrfs** e a 17
-trata de arquivos em `/boot` que o GRUB confunde com kernels. As 18-20 sao do
-**modulo `desktop/`** (iwd sem cripto no kernel, `XDG_RUNTIME_DIR` e como
-testar a sessao do niri) e so importam depois do primeiro boot.
+trata de arquivos em `/boot` que o GRUB confunde com kernels. As 18-21 sao do
+**modulo `desktop/`** (iwd sem cripto no kernel, `XDG_RUNTIME_DIR`, como testar
+a sessao do niri e as sub-etapas de rede da etapa 16) e so importam depois do
+primeiro boot.
 
 > **Regra de ouro deste projeto:** houve **uma** execucao em hardware real
-> (2026-09-02, base + `desktop/`), com intervencao manual em oito pontos. Uma
-> execucao nao e reprodutibilidade. Mantenha SEMPRE um live USB gravado e
-> testado ao alcance, e **nao apague a instalacao anterior** ate um boot
-> completo ter sucesso.
+> (2026-09-02, base + `desktop/`; a etapa 16 em 2026-09-03), com intervencao
+> manual em vinte pontos ao todo. Uma execucao nao e reprodutibilidade. Mantenha
+> SEMPRE um live USB gravado e testado ao alcance, e **nao apague a instalacao
+> anterior** ate um boot completo ter sucesso.
 
 ---
 
@@ -1084,3 +1085,65 @@ rc-service seatd status                       # tem de estar 'started'
 `dinitctl`, nao acha nenhum, imprime `No systemd or dinit detected` e **sai**. E
 por isso que o `package.use` deste modulo fixa `gui-wm/niri -systemd` — com a
 flag ligada, o `.desktop` instalado aponta para o script errado.
+
+---
+
+## 21. Sub-etapas de rede: falha de DNS nao e bug do instalador
+
+**Sintoma**, na etapa 16:
+
+```
+fatal: unable to access 'https://github.com/StatIndet/keytop/':
+Could not resolve host: github.com (Timeout while contacting DNS servers)
+```
+
+Aconteceu duas vezes no mesmo ciclo, nas duas sub-etapas que dependem de rede:
+`16-key-cli` (que faz `pip install` de uma URL git) e `16-keytop` (`git fetch`).
+O DNS do roteador engasgou; o `ping github.com` respondeu logo depois e o re-run
+passou.
+
+**Nao ha defeito de codigo aqui.** Essas sub-etapas nao sao idempotentes contra
+falha de resolucao — nem tem como ser: um clone pela metade e um clone pela
+metade. A acao correta e **reexecutar**, nao investigar o script.
+
+### Fallback de DNS que sobrevive ao dhcpcd
+
+Escrever `nameserver` direto no `/etc/resolv.conf` nao adianta: o dhcpcd
+reescreve o arquivo na proxima renovacao de lease e a linha some. O lugar certo
+e o `resolv.conf.tail`, cujo conteudo o dhcpcd **acrescenta** ao final:
+
+```sh
+echo 'nameserver 1.1.1.1' >> /etc/resolv.conf.tail
+```
+
+Isso mantem o DNS do roteador como primario e da um segundo servidor para quando
+ele engasgar.
+
+Para diagnosticar sem depender do resolvedor do sistema, o `curl` do Gentoo e
+linkado com c-ares e aceita servidor explicito:
+
+```sh
+curl -sS --dns-servers 1.1.1.1 https://github.com -o /dev/null -w '%{http_code}\n'
+```
+
+Se essa linha responde `200` e o `curl` sem `--dns-servers` nao, o problema e o
+resolvedor, nao a rede.
+
+### O `16-keytop` nao tenta de novo sozinho
+
+Quando a instalacao do keytop falha, a sub-etapa **nao derruba a etapa** — e
+deliberado: o `SystemMonitorService` do Clavis trata a ausencia e o resto da
+shell funciona inteiro. O marker grava `skipped`, e o `probe_keytop` trata
+`skipped` como desfecho terminal. Reexecutar a etapa 16 **nao** tenta de novo.
+
+Para insistir:
+
+```sh
+sudo rm /var/lib/gentoo-install/state/16-keytop
+sudo ./desktop/install-desktop.sh --only 16
+```
+
+Consequencia a ter em mente: um marker `skipped` nao diz que o `keytop` esta
+ausente — so que a sub-etapa desistiu. Se alguem instalar o binario a mao
+depois, o marker continua dizendo `skipped` e os dois convivem sem conflito,
+porque o probe reporta feito nos dois casos.

@@ -171,6 +171,11 @@ Em `/etc` (sempre em arquivos **proprios**, nunca reescrevendo os do instalador)
   quando o ramo for `>=595`. Reescrever aquele arquivo sabotaria o instalador
   validado.
 - `/etc/portage/package.use/00cpu-flags` — saida do `cpuid2cpuflags`
+- `/etc/portage/package.accept_keywords/clavis` e `/etc/portage/package.use/clavis`
+  — **apenas** com `DESKTOP_CLAVIS=yes` (etapa 16). Os dois sao GERADOS por
+  `gen_clavis_keywords()` e `gen_clavis_use()`, e reescritos inteiros quando o
+  gerador muda: **editar estes arquivos a mao nao sobrevive a proxima execucao**,
+  e ainda contorna a validacao contra o IUSE real. Corrija o gerador
 - `/etc/pam.d/system-login`, `/etc/pam.d/elogind-user` — apenas na rota elogind
 - `/etc/local.d/create-runuser.start` — apenas na rota seatd, para `XDG_RUNTIME_DIR`
 - `/etc/default/grub` — **somente** no ramo 580 e **somente** se o modeset estiver

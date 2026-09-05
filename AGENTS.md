@@ -39,7 +39,7 @@ RTX 5060 Ti 16GB (Blackwell) · 32 GiB · NVMe · **kernel sem initramfs**
 |---|---|
 | raiz | Instalador base, etapas `00`–`06` + `install.sh` + `lib.sh` + `vars.sh` |
 | `desktop/` | Módulo **pós-instalação** (niri/Wayland), etapas `10`–`16` |
-| `tests/` | Suíte do host, 432+ asserções. Nada aqui executa o instalador |
+| `tests/` | Suíte do host, 642 asserções. Nada aqui executa o instalador |
 | `docs/` | `VALIDACAO.md` (o que rodou), `ARMADILHAS.md` (manual de operação), `PROXIMOS-PASSOS.md` (estado atual) |
 
 ---
@@ -89,9 +89,9 @@ existir, o runner avisa e pula — não invente que passou.
 
 ## As armadilhas que já morderam este projeto
 
-Vinte e tres bugs reais foram encontrados **executando** o instalador. `bash -n`,
-ShellCheck e uma auditoria adversarial de 13 dimensões passaram por cima de
-**todos os nove**. Registro completo em `docs/VALIDACAO.md`.
+Trinta e cinco bugs reais foram encontrados **executando** o instalador.
+`bash -n`, ShellCheck e uma auditoria adversarial de 13 dimensões passaram por
+cima de **todos os trinta e cinco**. Registro completo em `docs/VALIDACAO.md`.
 
 Os padrões que se repetem — desconfie deles em qualquer código novo:
 
@@ -123,6 +123,15 @@ pior que guarda nenhuma — falha justamente quando deveria proteger.
 em `lib.sh` (correta) e copiada em `00-partition.sh` (quebrada). Antes de
 escrever um helper, procure se já existe.
 
+**7. Corrigir o artefato em vez do gerador.** Na etapa 16, parte das correções
+foi escrita direto no `/etc/portage/package.use/clavis` — que é **gerado** por
+`gen_clavis_use()` e reescrito inteiro por `write_managed_file` na execução
+seguinte. Duas consequências: as correções seriam apagadas sem aviso, e uma
+delas (`dev-qt/qt5-compat`, atom que não existe) passou justamente porque
+escrever fora do gerador **contorna a validação** — o `have_atom` do
+`_use_line_clavis` teria matado com mensagem nomeando o atom. Quando existir um
+gerador, corrija o gerador.
+
 ---
 
 ## Não faça
@@ -144,9 +153,12 @@ escrever um helper, procure se já existe.
 | | |
 |---|---|
 | Instalador `00`–`06`, ext4, OpenRC | **2 ciclos completos em QEMU + boot** |
-| btrfs | implementado, **nunca executado** |
-| `desktop/` (niri) | escrito, **nunca executado** |
-| Bare metal, runtime NVIDIA, systemd | **nunca** |
+| btrfs | **instalou e bootou** no bare metal (2026-09-02) |
+| `desktop/` (niri), etapas `10`–`15` | **executado** no bare metal (2026-09-02), 9 bugs corrigidos durante a execução |
+| `desktop/`, etapa `16` (Clavis, opt-in) | **executada** (2026-09-03), 12 bugs corrigidos durante a execução |
+| Bare metal, runtime NVIDIA | **feito** — sessão niri sob Wayland na RTX 5060 Ti |
+| Branch `INIT_SYSTEM=systemd` | **nunca** |
+| Qualquer execução **sem intervenção manual** | **nunca** — é o buraco principal |
 
 `docs/PROXIMOS-PASSOS.md` tem o estado operacional e o próximo passo.
 
