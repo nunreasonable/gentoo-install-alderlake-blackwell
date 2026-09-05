@@ -77,8 +77,13 @@ PKGUSE_FILE=/etc/portage/package.use/clavis
 # Arquivo PROPRIO (package.accept_keywords/clavis), como as demais etapas: o
 # modulo nunca edita os arquivos do instalador base nem os da etapa 10.
 #
-# So dois atoms. O qtkeychain e ESTAVEL em amd64 e nao entra — destravar por
-# precaucao esconde de voce quando um pacote de fato precisou ser destravado.
+# O qtkeychain e ESTAVEL em amd64 e nao entra — destravar por precaucao esconde
+# de voce quando um pacote de fato precisou ser destravado.
+#
+# Comecou com dois atoms (quickshell e libcava, os dois da GURU). Os outros tres
+# vieram da primeira execucao real: cpptrace e libdwarf por cascata do
+# crash-handler, brightnessctl pelo controle de brilho. Ver docs/VALIDACAO.md,
+# Ciclo 6.
 
 gen_clavis_keywords() {
     printf '%s\n' "# Keywords ~amd64 exigidas pelo Clavis Shell."
@@ -91,6 +96,16 @@ gen_clavis_keywords() {
     printf '%s\n' ""
     printf '%s\n' "gui-apps/quickshell ~amd64"
     printf '%s\n' ">=media-sound/libcava-1.0.0 ~amd64"
+    printf '%s\n' ""
+    printf '%s\n' "# dev-cpp/cpptrace entra por quickshell[crash-handler], que e flag"
+    printf '%s\n' "# default, e so existe em ~amd64. O cpptrace[unwind] por sua vez puxa"
+    printf '%s\n' "# dev-libs/libdwarf, tambem ~amd64: destravar um pacote de testing"
+    printf '%s\n' "# arrasta as exigencias DELE junto, e a cascata so termina compilando."
+    printf '%s\n' "dev-cpp/cpptrace ~amd64"
+    printf '%s\n' "dev-libs/libdwarf ~amd64"
+    printf '%s\n' ""
+    printf '%s\n' "# app-misc/brightnessctl: controle de brilho usado pela shell."
+    printf '%s\n' "app-misc/brightnessctl ~amd64"
 }
 
 probe_clavis_keywords() {
@@ -111,8 +126,15 @@ run_step 16-clavis-keywords probe_clavis_keywords do_clavis_keywords
 # 16-clavis-use — as USE que NAO sao default e sem as quais o build falha
 # ---------------------------------------------------------------------------
 #
-# Tres linhas, e nenhuma e cosmetica. Cada uma foi derivada do ebuild ou do
-# CMakeLists do upstream, nao de receita:
+# Nenhuma linha aqui e cosmetica. Cada uma foi derivada do ebuild ou do
+# CMakeLists do upstream, nao de receita.
+#
+# HISTORICO — vale mais que a lista. Este bloco nasceu com TRES linhas, e a
+# primeira execucao real da etapa (Ciclo 6, 2026-09-03) descobriu outras oito,
+# uma a uma, cada vez que o emerge parava pedindo --autounmask-write. Sao dois
+# grupos: os que o quickshell exige direto, e os que so aparecem depois, quando
+# uma dependencia transitiva entra na arvore. O segundo grupo nao da para
+# prever lendo ebuild — so compilando. Registro em docs/VALIDACAO.md, Ciclo 6.
 #
 #   dev-qt/qtbase[vulkan]   O quickshell declara RDEPEND dev-qt/qtbase:6=
 #                           [dbus,vulkan,X?]. A USE 'vulkan' NAO e default no
@@ -144,10 +166,53 @@ gen_clavis_use() {
     _use_line_clavis dev-qt/qtbase:6 dbus vulkan
     printf '%s\n' ""
     printf '%s\n' "# linguist fornece o lrelease que o componente Qt6 LinguistTools usa."
-    _use_line_clavis dev-qt/qttools:6 linguist
+    printf '%s\n' "#"
+    printf '%s\n' "# Os DOIS negativos sao obrigatorios, e juntos. qttools[widgets] exige"
+    printf '%s\n' "# qtbase[-opengl], que colide de frente com o REQUIRED_USE do proprio"
+    printf '%s\n' "# qtbase: 'wayland? ( opengl )'. E desligar so widgets esbarra no"
+    printf '%s\n' "# REQUIRED_USE do qttools: 'assistant? ( widgets )'."
+    _use_line_clavis dev-qt/qttools:6 linguist -widgets -assistant
     printf '%s\n' ""
     printf '%s\n' "# pipewire NAO e default no libcava; o plugin de cava do Clavis o exige."
     _use_line_clavis media-sound/libcava pipewire
+    printf '%s\n' ""
+    printf '%s\n' "# qtdeclarative precisa CASAR com o qtbase: o atom do quickshell usa"
+    printf '%s\n' "# 'vulkan=', que exige o mesmo valor da flag nos dois. Como o quickshell"
+    printf '%s\n' "# exige qtbase[vulkan], qtdeclarative[vulkan] deixa de ser opcional."
+    _use_line_clavis dev-qt/qtdeclarative:6 vulkan
+    printf '%s\n' ""
+    printf '%s\n' "# libxkbcommon[X]: exigido pela cadeia do qtbase[X]."
+    _use_line_clavis x11-libs/libxkbcommon X
+    printf '%s\n' ""
+    printf '%s\n' "# unwind: exigido pelo cpptrace, que entra via quickshell[crash-handler]."
+    printf '%s\n' "# A alternativa era quickshell[-crash-handler], que cortaria cpptrace e"
+    printf '%s\n' "# libdwarf de uma vez — ao custo de perder os stack traces justamente"
+    printf '%s\n' "# num componente novo. Mantido o crash handler de proposito."
+    _use_line_clavis dev-cpp/cpptrace unwind
+    printf '%s\n' ""
+    printf '%s\n' "# opengl+wayland: exigidos pelo qtwayland, que vem de quickshell[wayland]."
+    _use_line_clavis dev-qt/qtbase:6 opengl wayland
+    printf '%s\n' ""
+    printf '%s\n' "# qtdeclarative[opengl]: mesma cadeia do qtbase[opengl], acima."
+    _use_line_clavis dev-qt/qtdeclarative:6 opengl
+    printf '%s\n' ""
+    printf '%s\n' "# networkmanager[iwd]: este sistema usa iwd como backend de Wi-Fi desde a"
+    printf '%s\n' "# etapa base. Sem esta flag o NM (que entra por quickshell[networkmanager])"
+    printf '%s\n' "# puxa o wpa_supplicant e passa a haver DOIS gerenciadores disputando a"
+    printf '%s\n' "# mesma interface. A outra saida seria quickshell[-networkmanager], que"
+    printf '%s\n' "# cortaria o widget de rede da shell."
+    _use_line_clavis net-misc/networkmanager iwd
+    printf '%s\n' ""
+    printf '%s\n' "# qt5compat[qml]: a flag NAO e default, e e ela que instala o modulo QML"
+    printf '%s\n' "# Qt5Compat.GraphicalEffects, importado pelo SystemBatteryTank do Clavis."
+    printf '%s\n' "# Sem ela so a lib C++ (libQt6Core5Compat.so) e instalada, e o QML falha"
+    printf '%s\n' "# com a MESMA mensagem de pacote ausente: 'module ... is not installed'."
+    _use_line_clavis dev-qt/qt5compat:6 qml
+    printf '%s\n' ""
+    printf '%s\n' "# brightnessctl[udev]: sem a regra de udev o binario precisa de root para"
+    printf '%s\n' "# escrever em /sys/class/backlight, e o controle de brilho da shell (que"
+    printf '%s\n' "# roda como o usuario) falha em silencio."
+    _use_line_clavis app-misc/brightnessctl udev
 }
 
 # Mesmo contrato do _use_line da etapa 10: valida contra o IUSE REAL antes de
@@ -208,6 +273,11 @@ CLAVIS_DEPS=(
     dev-qt/qtdeclarative:6
     dev-qt/qtshadertools:6
     dev-qt/qttools:6
+    # qt5compat NAO e dependencia do quickshell: e do Clavis. O
+    # Modules/SystemCards/SystemBatteryTank.qml importa Qt5Compat.GraphicalEffects,
+    # e sem o pacote o shell.qml so falha no RUNTIME, ja com tudo compilado.
+    dev-qt/qt5compat:6
+    app-misc/brightnessctl
     media-video/pipewire
     dev-vcs/git
     dev-build/cmake
@@ -300,8 +370,12 @@ probe_clavis_build() {
     qmldir="$(clavis_qml_dir)"
     # Os DOIS modulos nativos, e o .so de verdade — nao so o diretorio, que a
     # copia do CMake cria mesmo quando nao ha o que copiar.
-    compgen -G "$qmldir/Clavis/*.so" > /dev/null || return 1
-    compgen -G "$qmldir/M3Shapes/*.so" > /dev/null || return 1
+    #
+    # find, e nao compgen -G: o Qt6 instala modulos QML em UM SUBDIRETORIO POR
+    # MODULO (qml/Clavis/DesktopCards/, qml/Clavis/Weather/, ...). Um glob de um
+    # nivel so nao ve nenhum deles e reprova um build inteiro que deu certo.
+    [[ -n "$(find "$qmldir/Clavis" -name '*.so' -print -quit 2>/dev/null)" ]] || return 1
+    [[ -n "$(find "$qmldir/M3Shapes" -name '*.so' -print -quit 2>/dev/null)" ]] || return 1
     # A config do Quickshell, que e o que o `key shell` carrega.
     [[ -f /etc/xdg/quickshell/clavis/shell.qml ]] || return 1
     # E o ref pedido tem de ser o instalado: trocar DESKTOP_CLAVIS_REF precisa
@@ -348,7 +422,7 @@ do_clavis_build() {
 
     # O install COPIA da build-tree. Se o build nao produziu os .so, o install
     # instalaria vazio e sairia 0. Verificamos aqui, antes.
-    compgen -G "$CLAVIS_BUILD/qml/Clavis/*.so" > /dev/null \
+    [[ -n "$(find "$CLAVIS_BUILD/qml/Clavis" -name '*.so' -print -quit 2>/dev/null)" ]] \
         || die "a compilacao terminou mas nenhum .so apareceu em '$CLAVIS_BUILD/qml/Clavis'. O 'cmake --install' deste upstream copia da build-tree (nao ha install(TARGETS)), entao instalar agora produziria um diretorio vazio SEM erro."
 
     cmake --install "$CLAVIS_BUILD" \
@@ -362,7 +436,7 @@ do_clavis_build() {
 probe_clavis_build_artifacts_or_die() {
     local qmldir
     qmldir="$(clavis_qml_dir)"
-    compgen -G "$qmldir/Clavis/*.so" > /dev/null \
+    [[ -n "$(find "$qmldir/Clavis" -name '*.so' -print -quit 2>/dev/null)" ]] \
         || die "o 'cmake --install' saiu com 0 mas nao ha .so em '$qmldir/Clavis'. Confira o CLAVIS_QML_INSTALL_DIR do build."
     [[ -f /etc/xdg/quickshell/clavis/shell.qml ]] \
         || die "o shell.qml nao foi instalado em /etc/xdg/quickshell/clavis. Sem ele o 'key shell' nao tem o que carregar."
