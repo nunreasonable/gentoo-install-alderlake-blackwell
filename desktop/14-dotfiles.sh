@@ -433,6 +433,26 @@ niri_config_content() {
 // necessaria e uma chance a mais de incompatibilidade entre versoes.
 // Referencia completa: https://github.com/niri-wm/niri/wiki
 
+// Variaveis do ambiente da sessao. So entra aqui o que o niri NAO define
+// sozinho e sem o qual algum aplicativo quebra.
+//
+// QT_QPA_PLATFORM: sem esta linha, aplicativos Qt6 desta sessao falham com
+//
+//     This application failed to start because no Qt platform plug-in
+//     could be initialized. Reinstalling the application may fix this problem.
+//
+// mesmo com libqwayland.so presente em qt6/plugins/platforms/ e com o
+// wayland-shell-integration completo. Observado na etapa 16 (Clavis Shell),
+// que e um aplicativo Qt: com a variavel declarada, a shell sobe.
+//
+// O MECANISMO exato nao foi isolado — a suspeita e o Qt eleger o backend xcb
+// por causa do DISPLAY que o xwayland-satellite exporta, mas isso nao foi
+// comprovado. O que esta registrado e o efeito, nao a teoria. Ver
+// docs/VALIDACAO.md, Ciclo 6.
+environment {
+    QT_QPA_PLATFORM "wayland"
+}
+
 // Aparencia do cursor.
 //
 // ATENCAO — VALOR UNICO EM TRES LUGARES: este bloco, o gsettings
