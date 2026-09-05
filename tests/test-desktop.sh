@@ -1045,6 +1045,94 @@ else
         no "16-clavis escreve USE sem validar contra o IUSE"
     fi
 
+    # --- Ciclo 6: as USE que a primeira execucao real descobriu -------------
+    # Todas foram achadas pelo autounmask, uma a uma. As asercoes abaixo
+    # guardam a FORMA da correcao; que o conjunto FECHE so o emerge sabe.
+
+    # qtdeclarative com 'vulkan': o atom do quickshell usa 'vulkan=', que exige
+    # o mesmo valor da flag no qtbase e no qtdeclarative.
+    if grep -qE 'dev-qt/qtdeclarative:6 .*vulkan' <<< "$use_block"; then
+        ok "declara qtdeclarative[vulkan] (casa com o 'vulkan=' do qtbase)"
+    else
+        no "falta qtdeclarative[vulkan] em gen_clavis_use" \
+           "o atom usa 'vulkan=': as duas USE tem de ter o mesmo valor"
+    fi
+
+    # qtwayland (via quickshell[wayland]) exige qtbase[opengl,wayland].
+    if grep -qE 'dev-qt/qtbase:6 .*opengl.*wayland|dev-qt/qtbase:6 .*wayland.*opengl' <<< "$use_block"; then
+        ok "declara qtbase[opengl,wayland] (exigidos pelo qtwayland)"
+    else
+        no "falta qtbase[opengl,wayland] em gen_clavis_use" \
+           "qtwayland vem de quickshell[wayland] e exige as duas"
+    fi
+
+    # cpptrace[unwind] vem de quickshell[crash-handler], que e flag default.
+    if grep -qE 'dev-cpp/cpptrace .*unwind' <<< "$use_block"; then
+        ok "declara cpptrace[unwind] (cadeia do quickshell[crash-handler])"
+    else
+        no "falta cpptrace[unwind] em gen_clavis_use"
+    fi
+
+    # Sistema com iwd: sem esta flag o NM puxa wpa_supplicant e passam a existir
+    # DOIS gerenciadores de Wi-Fi na mesma interface.
+    if grep -qE 'net-misc/networkmanager .*iwd' <<< "$use_block"; then
+        ok "declara networkmanager[iwd] (o backend de Wi-Fi deste sistema)"
+    else
+        no "falta networkmanager[iwd] em gen_clavis_use" \
+           "sem ela o NM traz wpa_supplicant e disputa a interface com o iwd"
+    fi
+
+    # qttools[widgets] exige qtbase[-opengl], que colide com o REQUIRED_USE
+    # 'wayland? ( opengl )' do qtbase. E o qttools tem 'assistant? ( widgets )',
+    # entao os DOIS negativos precisam andar juntos: so '-widgets' nao resolve.
+    if grep -qE 'dev-qt/qttools:6 .*-widgets' <<< "$use_block" \
+       && grep -qE 'dev-qt/qttools:6 .*-assistant' <<< "$use_block"; then
+        ok "qttools com -widgets E -assistant (REQUIRED_USE exige os dois juntos)"
+    else
+        no "qttools sem '-widgets -assistant' juntos" \
+           "widgets exige qtbase[-opengl], que colide com 'wayland? ( opengl )'; e assistant exige widgets"
+    fi
+
+    # O Clavis importa Qt5Compat.GraphicalEffects (SystemBatteryTank.qml). No
+    # Gentoo o modulo QML fica atras da USE 'qml', que NAO e default: sem ela
+    # so a lib C++ e instalada e o QML falha com a MESMA mensagem de pacote
+    # ausente. Por isso a dependencia E a flag precisam estar declaradas.
+    if grep -qE 'dev-qt/qt5compat:6 .*qml' <<< "$use_block"; then
+        ok "declara qt5compat[qml] (a flag, nao so o pacote)"
+    else
+        no "falta qt5compat[qml] em gen_clavis_use" \
+           "sem a flag, 'module Qt5Compat.GraphicalEffects is not installed' — identico a pacote ausente"
+    fi
+    deps_block="$(sed -n '/^CLAVIS_DEPS=(/,/^)/p' "$CLAVIS_SH")"
+    if grep -qE '^[[:space:]]*dev-qt/qt5compat' <<< "$deps_block"; then
+        ok "dev-qt/qt5compat esta em CLAVIS_DEPS"
+    else
+        no "dev-qt/qt5compat fora de CLAVIS_DEPS" \
+           "o shell.qml importa Qt5Compat.*; sem o pacote a falha so aparece no runtime"
+    fi
+
+    # O nome do pacote e 'qt5compat', SEM hifen. 'dev-qt/qt5-compat' e um atom
+    # que nao existe: escrito a mao no package.use gerado, virou no-op silencioso
+    # (o have_atom do _use_line_clavis teria matado com mensagem).
+    if strip_noise "$CLAVIS_SH" | grep -qE 'qt5-compat'; then
+        no "16-clavis usa 'dev-qt/qt5-compat', atom que NAO existe" \
+           "o nome correto e dev-qt/qt5compat, sem hifen"
+    else
+        ok "qt5compat escrito sem hifen (qt5-compat nao existe na arvore)"
+    fi
+
+    # Keywords: destravar um pacote de testing arrasta as exigencias DELE.
+    # quickshell[crash-handler] -> cpptrace (~amd64) -> cpptrace[unwind] ->
+    # libdwarf (~amd64). Declarar so o primeiro para o emerge no segundo.
+    kw_block="$(extract_fn "$CLAVIS_SH" gen_clavis_keywords)"
+    if grep -qE 'dev-cpp/cpptrace ~amd64' <<< "$kw_block" \
+       && grep -qE 'dev-libs/libdwarf ~amd64' <<< "$kw_block"; then
+        ok "cpptrace E libdwarf destravados (a cascata inteira, nao so o topo)"
+    else
+        no "falta cpptrace ou libdwarf em gen_clavis_keywords" \
+           "cpptrace vem de quickshell[crash-handler] e puxa libdwarf; os dois so existem em ~amd64"
+    fi
+
     # media-sound/cava e media-sound/libcava instalam AMBOS /usr/bin/cava e nao
     # ha blocker declarado em nenhum dos dois ebuilds.
     if grep -q 'assert_no_cava_collision' "$CLAVIS_SH"; then
@@ -1078,6 +1166,27 @@ else
         ok "BUILD_TESTING=OFF (o CTest o liga por default e arrastaria Qt6::Test)"
     else
         no "BUILD_TESTING nao e desligado"
+    fi
+
+    # O Qt6 instala modulos QML em UM SUBDIRETORIO POR MODULO
+    # (qml/Clavis/DesktopCards/, qml/Clavis/Weather/, ...). Um 'compgen -G' com
+    # glob de um nivel so nao ve nenhum .so e reprova um build que deu certo.
+    # O check em si esta correto e precisa existir — sem install(TARGETS), o
+    # install copia da build-tree e sairia 0 num diretorio vazio. O defeito era
+    # o ALCANCE do glob, nao a ideia. Ha tres ocorrencias: do_clavis_build,
+    # probe_clavis_build e probe_clavis_build_artifacts_or_die.
+    if strip_noise "$CLAVIS_SH" | grep -qE 'compgen -G .*qml|compgen -G .*Clavis|compgen -G .*M3Shapes'; then
+        no "16-clavis confere artefato QML com 'compgen -G' (glob de um nivel so)" \
+           "o Qt6 instala em qml/Clavis/<Modulo>/; use find ... -name '*.so' -print -quit"
+    else
+        ok "artefatos QML conferidos com find recursivo, nao com glob raso"
+    fi
+    n_find="$(strip_noise "$CLAVIS_SH" | grep -cE "find .*-name '\\*\\.so' -print -quit")"
+    if (( n_find >= 3 )); then
+        ok "os tres checks de .so usam find recursivo ($n_find ocorrencias)"
+    else
+        no "so $n_find check(s) de .so com find recursivo, esperados 3" \
+           "do_clavis_build, probe_clavis_build e probe_clavis_build_artifacts_or_die"
     fi
 
     # --- Python / PEP 668 --------------------------------------------------
@@ -1187,6 +1296,19 @@ if grep -qE 'DESKTOP_LAUNCHER=none' "$VARS_D"; then
        "o fuzzel e a unica rota grafica independente do Clavis; sem ele, shell morto = nada abre"
 else
     ok "a derivacao NAO desliga o launcher (fuzzel fica como resgate)"
+fi
+
+# QT_QPA_PLATFORM no config.kdl gerado. Sem esta variavel, aplicativos Qt6 desta
+# sessao falham com "no Qt platform plug-in could be initialized" mesmo com o
+# libqwayland.so presente — foi o que impediu a shell do Clavis (que e Qt) de
+# subir na primeira execucao da etapa 16. A asercao guarda a linha escrita; que
+# o Qt inicialize, so a sessao real diz.
+ncc="$(extract_fn "$DESKTOP_DIR/14-dotfiles.sh" niri_config_content)"
+if grep -qE 'QT_QPA_PLATFORM +"wayland"' <<< "$ncc"; then
+    ok "o config.kdl gerado declara QT_QPA_PLATFORM=wayland (apps Qt6 da sessao)"
+else
+    no "niri_config_content nao declara QT_QPA_PLATFORM" \
+       "sem ela o Quickshell aborta com 'no Qt platform plug-in could be initialized'"
 fi
 
 lb="$(extract_fn "$DESKTOP_DIR/14-dotfiles.sh" niri_binds_launcher)"
