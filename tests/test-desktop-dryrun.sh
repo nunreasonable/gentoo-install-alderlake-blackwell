@@ -137,6 +137,21 @@ fi
 # ---------------------------------------------------------------------------
 # Uma mutacao com caminho ABSOLUTO escaparia do sandbox e do snapshot. Os
 # scripts nao devem criar nada nestes caminhos durante um dry-run.
+#
+# LIMITACAO CONHECIDA (documentada em docs/VALIDACAO.md, "A falha permanente do
+# test-desktop-dryrun nesta maquina"): isto e um teste de EXISTENCIA, nao de
+# vazamento. Nao ha snapshot antes/depois. Num host que ja rodou o modulo
+# desktop/ de verdade os tres caminhos existem por direito, e a asercao reprova
+# sempre — falso positivo permanente.
+#
+# O risco maior e o outro lado da mesma linha: nesse host, um dry-run que
+# REALMENTE escrevesse aqui produziria a MESMA saida da falha conhecida. As duas
+# situacoes sao indistinguiveis, e o teste deixa de provar o que existe para
+# provar. A checagem so e confiavel em host limpo.
+#
+# Correcao pendente: registrar existencia+mtime+hash dos tres caminhos ANTES de
+# rodar os scripts (como a checagem 1 faz com o sandbox) e reprovar so se
+# mudarem.
 vazou=""
 for p in /etc/portage/package.use/desktop-niri /etc/portage/repos.conf/guru.conf \
          /etc/X11/xorg.conf.d/20-nvidia.conf; do

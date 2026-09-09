@@ -422,7 +422,7 @@ validate_vars() {
     [[ "$NVIDIA_MODE" == "auto" || "$NVIDIA_MODE" == "force" || "$NVIDIA_MODE" == "skip" ]] \
         || die "NVIDIA_MODE='$NVIDIA_MODE' invalido (auto|force|skip)"
     local var
-    for var in ENABLE_SSHD ENABLE_DHCP ENABLE_WIFI ENABLE_SUDO GRUB_REMOVABLE AUTO_CONFIRM UPDATE_WORLD ALLOW_INSTALLED_HOST \
+    for var in ENABLE_SSHD ENABLE_DHCP ENABLE_WIFI ENABLE_SUDO GRUB_REMOVABLE OS_PROBER AUTO_CONFIRM UPDATE_WORLD ALLOW_INSTALLED_HOST \
                READ_NEWS SKIP_HW_PREFLIGHT HW_PREFLIGHT_STRICT; do
         [[ "${!var}" == "yes" || "${!var}" == "no" ]] \
             || die "$var='${!var}' invalido (yes|no)"
@@ -1178,7 +1178,7 @@ confirm_destruction() {
     log_warn "apontar para outro disco depois de um reboot."
     log_warn "Estado atual do disco:"
     log_warn "=================================================================="
-    lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINT "$TARGET_DISK" || true
+    lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINTS "$TARGET_DISK" || true
     sgdisk -p "$TARGET_DISK" || true
 
     # O plano, nao so o estrago. Ate aqui o prompt mostrava apenas o que seria

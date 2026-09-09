@@ -327,6 +327,11 @@ verify_kconfig() {
         MODULES             # nvidia e out-of-tree
         X86_INTEL_PSTATE    # unico cpufreq hybrid-aware (P+E cores)
         SCHED_MC_PRIO       # ITMT: P-cores preferidos sobre E-cores
+        INTEL_IDLE          # bool sem "default" no Kconfig e ninguem o
+                            #   seleciona: o olddefconfig o fixa em n EM
+                            #   SILENCIO, e o x86_64_defconfig nao o traz.
+                            #   Sem ele o cpuidle cai em acpi_idle no Alder
+                            #   Lake. Ver kernel-fragment.config.
         MTRR                # exigido pelo nvidia-drivers
         # Grupo de console pre-driver: sem ele o boot e TELA PRETA ate o
         # nvidia-drm assumir — e o fragmento (blocos 143-157) ja pede os

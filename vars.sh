@@ -189,6 +189,19 @@
 # teimoso que ignora entradas de NVRAM). (yes|no)
 : "${GRUB_REMOVABLE:=no}"
 
+# Detectar outros sistemas operacionais e criar entrada de menu para eles.
+# Com yes o 05 declara sys-boot/grub[mount], instala sys-boot/os-prober e escreve
+# GRUB_DISABLE_OS_PROBER=false — as tres pecas sao necessarias e nenhuma delas e
+# default:
+#   - o os-prober DEPENDE de grub[mount] (usa o grub-mount para abrir filesystems
+#     que o kernel nao monta); sem a USE declarada o emerge para no autounmask
+#   - o GRUB desliga o os-prober por padrao desde 2021 (CVE-2020-14372); sem a
+#     linha no /etc/default/grub os outros discos sao ignorados EM SILENCIO
+# O os-prober monta as particoes dos outros sistemas somente-leitura.
+# Use 'no' em VM ou em maquina com um SO so: economiza o pacote e o tempo que o
+# grub-mkconfig gasta varrendo os discos. (yes|no)
+: "${OS_PROBER:=yes}"
+
 # yes = pula a confirmacao interativa "ERASE <disco>" (SO use em VM automatizada!)
 # Num sistema INSTALADO (nao live ISO) o bypass e IGNORADO: o prompt ERASE
 # continua obrigatorio — protecao contra um `export AUTO_CONFIRM=yes` esquecido

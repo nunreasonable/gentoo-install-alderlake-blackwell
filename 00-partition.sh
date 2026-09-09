@@ -118,7 +118,7 @@ _confirm_reformat() {
     log_warn "Isto normalmente significa que o disco tem uma instalacao anterior COM DADOS e que apenas os filesystems serao refeitos."
     log_warn "Para reparticionar do zero use --reset --repartition."
     log_warn "=================================================================="
-    lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINT "$TARGET_DISK" || true
+    lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINTS "$TARGET_DISK" || true
     if [[ "$AUTO_CONFIRM" == "yes" ]]; then
         log_warn "AUTO_CONFIRM=yes NAO se aplica aqui: reformatar sem ter reparticionado e destruicao nao solicitada — confirmacao interativa obrigatoria"
     fi
@@ -360,10 +360,11 @@ probe_mkfs_root() {
 
 # Distingue "quero trocar o filesystem da raiz" de "esqueci de passar ROOT_FS".
 #
-# probe_mkfs_root compara o tipo REAL com $ROOT_FS. Como o vars.sh tem
-# `: "${ROOT_FS:=ext4}"`, uma reexecucao SEM ROOT_FS no ambiente declara ext4,
-# ve btrfs no disco e conclui "falta formatar" — propondo destruir uma
-# instalacao pronta. Os guards seguintes (montagem, REFORMAT) barram a
+# probe_mkfs_root compara o tipo REAL com $ROOT_FS. Uma reexecucao SEM ROOT_FS no
+# ambiente pega o default do vars.sh; se ele nao bater com o filesystem do disco,
+# o probe conclui "falta formatar" — propondo destruir uma instalacao pronta.
+# (Quando esta regressao apareceu, em 2026-09-02, o default era `ext4` e o disco
+# era btrfs; hoje o default e `btrfs` e o caso simetrico e uma raiz ext4.) Os guards seguintes (montagem, REFORMAT) barram a
 # destruicao, mas nenhum deles diz a CAUSA, e "desmonte antes de reformatar"
 # leva o operador a remover justamente o guard que o salvou.
 #

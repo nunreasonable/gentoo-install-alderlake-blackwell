@@ -195,8 +195,9 @@ fi
 
 # --- ROOT_FS esquecido no ambiente nao pode propor destruir a instalacao -----
 # Regressao de 2026-09-02 (Ciclo 3): `./install.sh` sem ROOT_FS=btrfs, sobre uma
-# instalacao btrfs pronta. O vars.sh faz `: "${ROOT_FS:=ext4}"`, o probe comparou
-# ext4 (declarado) com btrfs (real), reportou nao-feito e chamou do_mkfs_root.
+# instalacao btrfs pronta. O default do vars.sh era `ext4` na epoca (hoje e
+# `btrfs`), o probe comparou ext4 (declarado) com btrfs (real), reportou
+# nao-feito e chamou do_mkfs_root.
 # Os guards barraram, mas a mensagem ("desmonte antes de reformatar") levava o
 # operador a remover o guard que o salvou.
 printf '\n  -- ROOT_FS ausente do ambiente --\n'

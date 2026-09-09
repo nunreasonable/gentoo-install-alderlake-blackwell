@@ -2,7 +2,9 @@
 # 05-bootloader.sh — GRUB UEFI + grub.cfg (fase chroot).
 #
 # Implementa o capitulo "Configuring the bootloader" do Handbook AMD64:
-#   - emerge sys-boot/grub (GRUB_PLATFORMS="efi-64" ja definido pelo 02 no make.conf)
+#   - package.use/bootloader com sys-boot/grub[mount] (pre-requisito do os-prober)
+#   - emerge sys-boot/grub (+ sys-boot/os-prober se OS_PROBER=yes)
+#     (GRUB_PLATFORMS="efi-64" ja definido pelo 02 no make.conf)
 #   - /etc/default/grub com os parametros de kernel necessarios
 #   - grub-install --target=x86_64-efi --efi-directory=/efi
 #   - grub-mkconfig -o /boot/grub/grub.cfg
@@ -10,13 +12,15 @@
 # Particularidade desta instalacao: NAO ha initramfs (kernel do 04 tem tudo
 # built-in). Sem initramfs o kernel NAO entende root=UUID= (UUID de filesystem
 # e resolvido por userspace/initramfs); ja root=PARTUUID= e resolvido pelo
-# proprio kernel via GPT. Por isso forcamos GRUB_DISABLE_LINUX_UUID=true e
-# passamos root=PARTUUID=<partuuid real da raiz> explicitamente na cmdline.
+# proprio kernel via GPT. Por isso GRUB_DISABLE_LINUX_UUID=true e
+# GRUB_DISABLE_LINUX_PARTUUID=false: com esses dois valores o 10_linux emite
+# root=PARTUUID=<partuuid real da raiz> sozinho, lendo o disco. Este modulo NAO
+# escreve root= em lugar nenhum — ver o comentario de probe_default_grub.
 #
-# Sub-etapas (run_step): 05-efi-mount, 05-grub-emerge, 05-default-grub,
-# 05-grub-install, 05-grub-cfg. Probes funcionais: o probe do 05-grub-cfg
-# exige que o grub.cfg mencione a versao ATUAL do kernel — assim um rebuild
-# de kernel no 04 invalida a sub-etapa e o grub.cfg e regenerado.
+# Sub-etapas (run_step): 05-efi-mount, 05-grub-use, 05-grub-emerge,
+# 05-default-grub, 05-grub-install, 05-grub-cfg. Probes funcionais: o probe do
+# 05-grub-cfg exige que o grub.cfg mencione a versao ATUAL do kernel — assim um
+# rebuild de kernel no 04 invalida a sub-etapa e o grub.cfg e regenerado.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -91,10 +95,70 @@ do_efi_mount() {
 }
 
 # ---------------------------------------------------------------------------
-# 05-grub-emerge — instala o GRUB
+# 05-grub-use — declara sys-boot/grub[mount] ANTES do emerge
+#
+# sys-boot/os-prober DEPENDE de sys-boot/grub[mount]: o que ele usa e o
+# grub-mount, para abrir por FUSE os filesystems dos outros sistemas sem
+# precisar que o kernel os monte. A flag nao e default, entao sem esta
+# sub-etapa o `emerge sys-boot/os-prober` do 05-grub-emerge PARA pedindo
+# --autounmask-write e nada e instalado. Regra do projeto (AGENTS.md): a config
+# do Portage e escrita aqui, a mao, nunca pelo autounmask.
+#
+# O arquivo precisa existir antes do emerge do GRUB tambem, e nao so antes do
+# os-prober: assim o grub ja e compilado com a flag certa de primeira, em vez de
+# ser reconstruido logo depois.
+#
+# Arquivo proprio (package.use/bootloader) para nao colidir com o
+# package.use/installkernel do 04 nem com o package.use/nvidia-drivers, que o 04
+# reescreve inteiro.
+# ---------------------------------------------------------------------------
+
+GRUB_PKGUSE=/etc/portage/package.use/bootloader
+
+probe_grub_use() {
+    if [[ "$OS_PROBER" != "yes" ]]; then
+        # Sem os-prober nao ha por que exigir a flag — e o arquivo, se ficou de
+        # uma execucao anterior com OS_PROBER=yes, tem de sumir (mesma simetria
+        # do 04 com package.accept_keywords/nvidia-drivers).
+        [[ ! -e "$GRUB_PKGUSE" ]]
+        return
+    fi
+    [[ -f "$GRUB_PKGUSE" ]] || return 1
+    # Linha ATIVA, nao o comentario que a explica (a mesma armadilha que ja
+    # reprovou o probe_default_grub: ver o comentario dele).
+    grep -vE '^[[:space:]]*#' "$GRUB_PKGUSE" \
+        | grep -qE '^[[:space:]]*sys-boot/grub([[:blank:]].*)?[[:blank:]]mount([[:blank:]]|$)'
+}
+
+do_grub_use() {
+    if [[ "$OS_PROBER" != "yes" ]]; then
+        rm -f "$GRUB_PKGUSE"
+        log_info "OS_PROBER=no — $GRUB_PKGUSE removido (nada a declarar)"
+        return 0
+    fi
+    mkdir -p /etc/portage/package.use
+    cat > "$GRUB_PKGUSE" <<'EOF'
+# Gerado por 05-bootloader.sh — pre-requisito do sys-boot/os-prober.
+#
+# mount : instala o grub-mount, que o os-prober usa para abrir os filesystems
+#     dos outros sistemas operacionais por FUSE (puxa sys-fs/fuse:3). O
+#     os-prober declara essa dependencia como sys-boot/grub[mount]: sem a flag
+#     o emerge dele para pedindo --autounmask-write e nada e instalado.
+#
+# UMA LINHA SO: package.use nao suporta continuacao com "\" — a barra viraria
+# um flag literal e o portage reclamaria de flag invalida.
+sys-boot/grub mount
+EOF
+    log_info "$GRUB_PKGUSE escrito (sys-boot/grub mount — exigido pelo os-prober)"
+}
+
+# ---------------------------------------------------------------------------
+# 05-grub-emerge — instala o GRUB (+ os-prober)
 # Handbook: "Emerge" (Default: GRUB) — `emerge --ask sys-boot/grub`.
 # GRUB_PLATFORMS="efi-64" ja foi gravado no make.conf pelo 02, entao o build
 # traz o suporte UEFI de 64 bits (/usr/lib/grub/x86_64-efi).
+# sys-boot/efibootmgr, que o probe_grub_install usa, entra sozinho como RDEPEND
+# do grub com grub_platforms_efi-64 — por isso nao esta na lista abaixo.
 # ---------------------------------------------------------------------------
 
 probe_grub_emerge() {
@@ -102,11 +166,33 @@ probe_grub_emerge() {
     # instaladas (grub compilado sem efi-64 seria inutil aqui).
     command -v grub-install > /dev/null 2>&1 || return 1
     command -v grub-mkconfig > /dev/null 2>&1 || return 1
-    [[ -d /usr/lib/grub/x86_64-efi ]]
+    [[ -d /usr/lib/grub/x86_64-efi ]] || return 1
+    if [[ "$OS_PROBER" == "yes" ]]; then
+        # grub-mount so existe com USE=mount — e a prova FUNCIONAL da flag, mais
+        # confiavel que ler o USE do /var/db/pkg.
+        command -v grub-mount > /dev/null 2>&1 || return 1
+        command -v os-prober > /dev/null 2>&1 || return 1
+    fi
+    return 0
 }
 
 do_grub_emerge() {
-    emerge sys-boot/grub
+    local pkgs=(sys-boot/grub)
+    [[ "$OS_PROBER" == "yes" ]] && pkgs+=(sys-boot/os-prober)
+    # Sem --noreplace de proposito: quando o package.use do 05-grub-use muda a
+    # USE do grub ja instalado, o atomo explicito precisa ser re-mergeado para a
+    # flag valer. A sub-etapa so roda com o probe reprovado, entao o custo e
+    # limitado a uma reconstrucao do grub, que e barata.
+    emerge "${pkgs[@]}"
+
+    # Verificar DEPOIS de instalar (invariante 6): o pacote pode estar merged e
+    # ainda assim nao ter deixado o binario de que dependemos.
+    if [[ "$OS_PROBER" == "yes" ]]; then
+        command -v grub-mount > /dev/null 2>&1 \
+            || die "sys-boot/grub foi emergido SEM USE=mount (nao ha grub-mount) — o os-prober nao consegue inspecionar os outros discos. Confira $GRUB_PKGUSE e se algum outro arquivo de /etc/portage/package.use desliga a flag"
+        command -v os-prober > /dev/null 2>&1 \
+            || die "sys-boot/os-prober foi emergido mas nao ha o binario os-prober no PATH"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -124,10 +210,18 @@ do_grub_emerge() {
 # INTEL_IOMMU_DEFAULT_ON desligado — a decisao fica na cmdline).
 # ---------------------------------------------------------------------------
 
+# _grub_disable_os_prober: valor de GRUB_DISABLE_OS_PROBER para o OS_PROBER
+# corrente. A variavel do GRUB e negada (DISABLE), entao os valores se invertem.
+# Uma funcao so, usada pelo do_ e pelo probe_, para os dois nunca discordarem.
+_grub_disable_os_prober() {
+    if [[ "$OS_PROBER" == "yes" ]]; then printf 'false\n'; else printf 'true\n'; fi
+}
+
 probe_default_grub() {
     [[ -f /etc/default/grub ]] || return 1
     grep -qx 'GRUB_DISABLE_LINUX_UUID=true' /etc/default/grub || return 1
     grep -qx 'GRUB_DISABLE_LINUX_PARTUUID=false' /etc/default/grub || return 1
+    grep -qx "GRUB_DISABLE_OS_PROBER=$(_grub_disable_os_prober)" /etc/default/grub || return 1
     # Nenhum root= ATIVO: quem emite o root= e o 10_linux, a partir do estado
     # real do disco. Um root= aqui seria uma segunda fonte de verdade.
     #
@@ -159,8 +253,13 @@ GRUB_DISABLE_LINUX_PARTUUID=false
 # intel_iommu : liga a IOMMU (VT-d) — o kernel foi buildado com
 #               INTEL_IOMMU_DEFAULT_ON desligado de proposito
 GRUB_CMDLINE_LINUX="intel_iommu=on"
+
+# O GRUB desliga o os-prober por DEFAULT desde 2.06 (2021, resposta ao
+# CVE-2020-14372). Sem esta linha o grub-mkconfig ignora os outros discos EM
+# SILENCIO: nenhum aviso, nenhum erro, so um menu sem os outros sistemas.
+GRUB_DISABLE_OS_PROBER=$(_grub_disable_os_prober)
 EOF
-    log_info "/etc/default/grub escrito (root=PARTUUID emitido pelo 10_linux)"
+    log_info "/etc/default/grub escrito (root=PARTUUID emitido pelo 10_linux; os-prober=$OS_PROBER)"
 }
 
 # ---------------------------------------------------------------------------
@@ -302,15 +401,31 @@ probe_grub_cfg() {
     grub_cfg_root_ok /boot/grub/grub.cfg
 }
 
-# grub_cfg_root_ok <arquivo>: valida as linhas `linux ...` do grub.cfg. Cada
-# uma precisa ter EXATAMENTE uma ocorrencia de root= e ela precisa ser o
-# PARTUUID real da raiz. Sem initramfs um root= errado (ou um segundo root=
-# divergente vencendo por ser o ultimo) e maquina que nao boota, e o grep -qF
-# de substring do probe antigo casava em qualquer posicao, inclusive num
-# menuentry de outro sistema. Retorna 1 se nao houver nenhuma linha linux.
+# grub_cfg_root_ok <arquivo>: valida as linhas `linux ...` do grub.cfg que
+# pertencem AO NOSSO kernel. Cada uma precisa ter EXATAMENTE uma ocorrencia de
+# root= e ela precisa ser o PARTUUID real da raiz. Sem initramfs um root= errado
+# (ou um segundo root= divergente vencendo por ser o ultimo) e maquina que nao
+# boota, e o grep -qF de substring do probe antigo casava em qualquer posicao.
+# Retorna 1 se nao houver nenhuma linha linux nossa.
+#
+# O filtro por vmlinuz-$KERNEL_RELEASE nao e cosmetico. Com OS_PROBER=yes o
+# 30_os-prober acrescenta menuentries dos outros sistemas, e o `linux` delas
+# carrega o root= DELES (tipicamente root=UUID=... do Fedora). Sem o filtro,
+# validar TODAS as linhas fazia o probe reprovar um grub.cfg perfeitamente
+# correto, e o run_step nao tolera isso: depois do do_fn, probe reprovado e
+# `die "[05-grub-cfg] do_fn terminou mas o probe ainda reporta nao-feito"`. Ou
+# seja, ligar o os-prober sem este filtro troca "nao detecta o outro SO" por
+# "a etapa 05 falha". O invariante que importa — a NOSSA entrada aponta para o
+# PARTUUID real da raiz — continua valendo igual; ele so deixa de ser aplicado a
+# entradas que legitimamente tem outro root=.
+#
+# O backup vmlinuz-<rel>.old continua sendo validado: o nome dele CONTEM
+# vmlinuz-<rel>, e a entrada que o 10_linux gera para ele aponta para a mesma
+# raiz.
 grub_cfg_root_ok() {
     local cfg="$1" line n found=0
     while IFS= read -r line; do
+        [[ "$line" == *"vmlinuz-$KERNEL_RELEASE"* ]] || continue
         found=1
         # conta as ocorrencias de root= nesta linha
         n="$(grep -o -- 'root=' <<< "$line" | grep -c .)" || n=0
@@ -356,6 +471,26 @@ do_grub_cfg() {
     mv -f "$tmp" /boot/grub/grub.cfg \
         || _grub_cfg_fail "$tmp" "falha ao publicar /boot/grub/grub.cfg"
     log_info "/boot/grub/grub.cfg gerado, validado com grub-script-check e publicado"
+
+    # Diagnostico, NAO probe: quantas entradas de outros sistemas o os-prober
+    # produziu. Zero e um resultado legitimo (maquina com um SO so), entao isto
+    # nao pode reprovar a etapa. Mas rodando dentro do chroot o os-prober as
+    # vezes nao enxerga nada, e sem esta linha a diferenca entre "nao ha outro
+    # SO" e "o os-prober nao funcionou aqui" so apareceria no reboot.
+    if [[ "$OS_PROBER" == "yes" ]]; then
+        # Linhas de boot que NAO sao do nosso kernel: chainloader (o os-prober
+        # achou um bootloader EFI de outro SO) ou linux apontando para outro
+        # vmlinuz. `|| true` porque grep -c sem match sai com 1, e sob set -e
+        # isso derrubaria a etapa depois do grub.cfg ja publicado.
+        local outras=0
+        outras="$(grep -E '^[[:blank:]]*(chainloader|linux)[[:blank:]]' /boot/grub/grub.cfg \
+                  | grep -vcF "vmlinuz-$KERNEL_RELEASE")" || outras=0
+        if (( outras > 0 )); then
+            log_info "os-prober: $outras entrada(s) de outros sistemas no menu"
+        else
+            log_warn "os-prober ligado mas nenhum outro sistema entrou no menu. Se voce TEM outro SO instalado, rode 'grub-mkconfig -o /boot/grub/grub.cfg' de novo depois de bootar — dentro do chroot o os-prober nem sempre consegue inspecionar os outros discos"
+        fi
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -384,7 +519,10 @@ main() {
         || die "/boot/vmlinuz-$KERNEL_RELEASE nao existe — rode 04-kernel.sh (make install) antes"
     log_info "kernel corrente: $KERNEL_RELEASE — raiz: $ROOT_PART (PARTUUID=$ROOT_PARTUUID)"
 
+    # 05-grub-use ANTES do 05-grub-emerge: a USE flag tem de estar declarada
+    # quando o emerge roda, senao ele para no autounmask.
     run_step 05-efi-mount    probe_efi_mount    do_efi_mount
+    run_step 05-grub-use     probe_grub_use     do_grub_use
     run_step 05-grub-emerge  probe_grub_emerge  do_grub_emerge
     run_step 05-default-grub probe_default_grub do_default_grub
     run_step 05-grub-install probe_grub_install do_grub_install

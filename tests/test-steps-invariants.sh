@@ -14,6 +14,7 @@ printf '\n== test-steps-invariants ==\n'
 INSTALL_SH="$REPO_DIR/install.sh"
 CHROOT_SH="$REPO_DIR/03-chroot-setup.sh"
 KERNEL_SH="$REPO_DIR/04-kernel.sh"
+BOOT_SH="$REPO_DIR/05-bootloader.sh"
 USERS_SH="$REPO_DIR/06-users-services.sh"
 
 # ==========================================================================
@@ -165,6 +166,19 @@ fi
 # O instalador nao pode reescrever config do portage sozinho.
 # Ignora comentarios: a documentacao do proprio codigo explica por que NAO usa
 # a flag, e citaria a si mesma.
+# --- o gate cobre o que o fragmento diz que ele cobre --------------------
+# INTEL_IDLE e bool sem "default" no Kconfig e ninguem o seleciona: o
+# olddefconfig o fixa em n EM SILENCIO. O kernel-fragment.config sempre disse
+# que "por isso INTEL_IDLE tambem entra no array required" — e nao entrava.
+# Quatro documentos afirmavam a mesma coisa. Corrigido em 2026-09-09.
+req="$(sed -n '/required=(/,/^    )/p' "$KERNEL_SH")"
+if grep -qE '^[[:space:]]*INTEL_IDLE\b' <<< "$req"; then
+    ok "verify_kconfig exige INTEL_IDLE (o fragmento afirma que sim)"
+else
+    no "INTEL_IDLE nao esta no array required do verify_kconfig" \
+       "o kernel-fragment.config e o README afirmam que o gate o exige; um kernel sem ele compilaria e cairia em acpi_idle"
+fi
+
 au="$(grep -rnE '^[^#]*--autounmask-write' "$REPO_DIR"/*.sh || true)"
 if [[ -n "$au" ]]; then
     no "algum script usa --autounmask-write (reescreve config do portage sem o operador)" "$au"
@@ -388,6 +402,129 @@ else
     assert_eq NOMATCH "$(check_inc x '@includedir /etc/sudoers.d.bak')" "recusa diretorio diferente"
     assert_eq NOMATCH "$(check_inc x 'Defaults env_reset')"          "recusa sudoers sem includedir"
     rm -rf "$STMP"
+fi
+
+# --- 05: os-prober e deteccao de dual-boot ----------------------------------
+# Tres pecas que nao sao default e que so funcionam juntas: a USE flag
+# sys-boot/grub[mount] (sem ela o emerge do os-prober para no autounmask), o
+# pacote sys-boot/os-prober, e GRUB_DISABLE_OS_PROBER=false (o GRUB desliga o
+# os-prober por default desde 2021 e ignora os outros discos EM SILENCIO).
+printf '\n  -- 05: os-prober / dual-boot --\n'
+
+main_boot="$(extract_fn "$BOOT_SH" main)"
+
+# ORDEM: a USE flag tem de estar escrita ANTES do emerge, senao o emerge para.
+use_pos="$(grep -n 'run_step 05-grub-use'    <<< "$main_boot" | head -n1 | cut -d: -f1)"
+emg_pos="$(grep -n 'run_step 05-grub-emerge' <<< "$main_boot" | head -n1 | cut -d: -f1)"
+if [[ -z "$use_pos" ]]; then
+    no "05-grub-use nao esta registrado como sub-etapa"
+elif [[ -z "$emg_pos" ]]; then
+    no "05-grub-emerge sumiu da sequencia de sub-etapas"
+elif (( use_pos < emg_pos )); then
+    ok "05-grub-use roda antes de 05-grub-emerge"
+else
+    no "05-grub-use roda DEPOIS de 05-grub-emerge" \
+       "o emerge do os-prober pararia pedindo --autounmask-write"
+fi
+
+# A flag em si. extract_fn para nao casar com o comentario que a explica.
+use_fn="$(extract_fn "$BOOT_SH" do_grub_use)"
+if grep -qE '^sys-boot/grub[[:blank:]]+mount[[:blank:]]*$' <<< "$use_fn"; then
+    ok "do_grub_use declara sys-boot/grub mount"
+else
+    no "do_grub_use nao declara sys-boot/grub mount" \
+       "sys-boot/os-prober depende de grub[mount]; o emerge trava no autounmask"
+fi
+if grep -qE 'rm -f' <<< "$use_fn"; then
+    ok "do_grub_use remove o package.use quando OS_PROBER=no (simetrico)"
+else
+    no "do_grub_use nao limpa o package.use com OS_PROBER=no" \
+       "o arquivo sobreviveria a uma troca de yes para no"
+fi
+
+# O pacote, e a prova FUNCIONAL da flag (grub-mount so existe com USE=mount).
+emerge_fn="$(extract_fn "$BOOT_SH" do_grub_emerge)"
+if grep -qF 'sys-boot/os-prober' <<< "$emerge_fn"; then
+    ok "do_grub_emerge instala sys-boot/os-prober"
+else
+    no "do_grub_emerge nao instala sys-boot/os-prober" "o GRUB nao detectaria outro SO"
+fi
+probe_emerge_fn="$(extract_fn "$BOOT_SH" probe_grub_emerge)"
+if grep -qF 'grub-mount' <<< "$probe_emerge_fn"; then
+    ok "probe_grub_emerge exige grub-mount (prova funcional do USE=mount)"
+else
+    no "probe_grub_emerge nao confere o USE=mount" \
+       "um grub sem a flag passaria no probe e o os-prober nao funcionaria"
+fi
+
+# GRUB_DISABLE_OS_PROBER, nos dois lados: quem escreve e quem confere.
+if grep -qF 'GRUB_DISABLE_OS_PROBER' <<< "$(extract_fn "$BOOT_SH" do_default_grub)"; then
+    ok "do_default_grub escreve GRUB_DISABLE_OS_PROBER"
+else
+    no "do_default_grub nao escreve GRUB_DISABLE_OS_PROBER" \
+       "o GRUB ignoraria os outros discos sem emitir erro"
+fi
+if grep -qF 'GRUB_DISABLE_OS_PROBER' <<< "$(extract_fn "$BOOT_SH" probe_default_grub)"; then
+    ok "probe_default_grub exige GRUB_DISABLE_OS_PROBER"
+else
+    no "probe_default_grub nao confere GRUB_DISABLE_OS_PROBER"
+fi
+
+# A variavel do GRUB e negada (DISABLE): os valores se invertem.
+osp_fn="$(extract_fn "$BOOT_SH" _grub_disable_os_prober)"
+if [[ -z "$osp_fn" ]]; then
+    no "05-bootloader nao define _grub_disable_os_prober"
+else
+    assert_eq "false" \
+        "$(bash -c 'eval "$1"; OS_PROBER=yes; _grub_disable_os_prober' _ "$osp_fn")" \
+        "OS_PROBER=yes  =>  GRUB_DISABLE_OS_PROBER=false"
+    assert_eq "true" \
+        "$(bash -c 'eval "$1"; OS_PROBER=no; _grub_disable_os_prober' _ "$osp_fn")" \
+        "OS_PROBER=no   =>  GRUB_DISABLE_OS_PROBER=true"
+fi
+
+# --- grub_cfg_root_ok com menuentries de outros sistemas --------------------
+# A regressao que ligar o os-prober cria. O 30_os-prober acrescenta menuentries
+# cujo `linux` carrega o root= do OUTRO sistema. A versao antiga validava TODAS
+# as linhas `linux` e reprovava um grub.cfg correto — e run_step nao tolera
+# probe reprovado depois do do_fn: mata a etapa 05 com "sub-etapa inconsistente".
+# Aqui a funcao e EXECUTADA contra grub.cfg sinteticos, nao inspecionada.
+root_ok_fn="$(extract_fn "$BOOT_SH" grub_cfg_root_ok)"
+if [[ -z "$root_ok_fn" ]]; then
+    no "05-bootloader nao define grub_cfg_root_ok"
+else
+    GTMP="$(mktemp -d)"
+    OUR_UUID=383490be-1111-2222-3333-444455556666
+    OUR_LINUX="	linux	/boot/vmlinuz-6.18.48-gentoo root=PARTUUID=$OUR_UUID ro intel_iommu=on"
+    # entrada tipica do 30_os-prober para um Fedora com /boot proprio
+    FEDORA_LINUX="	linux	/vmlinuz-6.17.4-200.fc44.x86_64 root=UUID=aaaabbbb-cccc-dddd-eeee-ffff00001111 ro rootflags=subvol=root"
+
+    check_cfg() {   # $1 = conteudo do grub.cfg
+        printf '%s\n' "$1" > "$GTMP/grub.cfg"
+        if bash -c '
+            set -uo pipefail
+            KERNEL_RELEASE=6.18.48-gentoo
+            ROOT_PARTUUID='"$OUR_UUID"'
+            eval "$1"
+            grub_cfg_root_ok "$2"
+        ' _ "$root_ok_fn" "$GTMP/grub.cfg"; then printf 'APROVA'; else printf 'REPROVA'; fi
+    }
+
+    assert_eq APROVA  "$(check_cfg "$OUR_LINUX")" \
+        "aprova grub.cfg so com a nossa entrada"
+    assert_eq APROVA  "$(check_cfg "$OUR_LINUX
+$FEDORA_LINUX")" \
+        "aprova grub.cfg com menuentry de outro SO (os-prober ligado)"
+    assert_eq APROVA  "$(check_cfg "$OUR_LINUX
+	linux	/boot/vmlinuz-6.18.48-gentoo.old root=PARTUUID=$OUR_UUID ro")" \
+        "aprova a entrada do kernel .old (mesma raiz)"
+    assert_eq REPROVA "$(check_cfg "$FEDORA_LINUX")" \
+        "reprova grub.cfg SEM nenhuma entrada nossa"
+    assert_eq REPROVA "$(check_cfg "	linux	/boot/vmlinuz-6.18.48-gentoo root=PARTUUID=$OUR_UUID ro root=/dev/nvme0n1p3")" \
+        "reprova dois root= na NOSSA entrada (o kernel obedeceria ao ultimo)"
+    assert_eq REPROVA "$(check_cfg "	linux	/boot/vmlinuz-6.18.48-gentoo root=PARTUUID=00000000-dead-beef-0000-000000000000 ro")" \
+        "reprova PARTUUID diferente do da raiz real"
+    rm -rf "$GTMP"
 fi
 
 finish

@@ -107,9 +107,16 @@ fi
 # --- 4. guardas de mount/swap usam findmnt, nunca a coluna singular -------
 # `lsblk -o MOUNTPOINT` (singular) reporta UM mountpoint por device: um segundo
 # mount do disco alvo ficava invisivel e chegava intacto ao sgdisk.
-if grep -rn 'NAME,MOUNTPOINT' "$REPO_DIR"/*.sh > /dev/null 2>&1; then
-    no "voltou a existir 'lsblk -o NAME,MOUNTPOINT' (coluna singular esconde mounts)" \
-       "$(grep -rn 'NAME,MOUNTPOINT' "$REPO_DIR"/*.sh)"
+# O grep antigo procurava a string literal 'NAME,MOUNTPOINT' e por isso deixava
+# passar a coluna singular quando havia outras colunas no meio — que era
+# exatamente o caso do prompt do ERASE
+# ('lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINT'). Agora a busca e
+# pela coluna em QUALQUER posicao da lista de -o, com \b para nao casar com o
+# plural MOUNTPOINTS, que e o correto.
+sing="$(grep -rnE 'lsblk[^|]*-o[[:blank:]]+[A-Z,]*\bMOUNTPOINT\b' "$REPO_DIR"/*.sh || true)"
+if [[ -n "$sing" ]]; then
+    no "coluna singular MOUNTPOINT do lsblk em uso (esconde o segundo mount de um device)" \
+       "$sing"
 else
     ok "nenhum uso da coluna singular MOUNTPOINT do lsblk"
 fi
