@@ -30,8 +30,8 @@ Esta secao e a informacao mais importante do repositorio. Ela e literal.
 |---|---|
 | `bash -n` (sintaxe) em todos os scripts | **Passou** |
 | ShellCheck (container, repo montado read-only) | **Passou** |
-| Auditoria adversarial multi-agente (44 problemas encontrados) | **Feita**; os corrigiveis em codigo foram corrigidos |
-| Suite de testes do host (`tests/run-tests.sh`) | **Passou** — 596 asercoes em 11 grupos |
+| Auditoria adversarial multi-agente, 7 dimensoes (31 achados: 1 critical, 8 high, 22 medium/low) | **Feita**; os corrigiveis em codigo foram corrigidos. Brutos em [`docs/audit/`](docs/audit/) |
+| Suite de testes do host (`tests/run-tests.sh`) | **659 asercoes em 13 grupos**, 658 passando. Duas ressalvas, ambas detalhadas em [`docs/VALIDACAO.md`](docs/VALIDACAO.md): o grupo ShellCheck e **pulado** sem `shellcheck`/`podman`, e o `test-desktop-dryrun` reprova **sempre** em host que ja rodou o modulo `desktop/` — falha conhecida, com um risco de falso negativo junto |
 
 ### Execucao em QEMU/OVMF — **tres ciclos completos, com boot** (2026-09-01/02)
 
@@ -48,7 +48,7 @@ VM: OVMF/UEFI, 6 vCPUs, disco **virtio** (`/dev/vda`), `NVIDIA_MODE=force`, Open
 > **[docs/VALIDACAO.md](docs/VALIDACAO.md)** tem o registro completo: cada bug,
 > sintoma, causa raiz, correcao, commit e o teste que o guarda.
 
-A tabela abaixo descreve as etapas; todas passaram nos dois ciclos.
+A tabela abaixo descreve as etapas; todas passaram nos tres ciclos.
 
 | Etapa | Estado | O que ficou provado |
 |---|---|---|
@@ -56,7 +56,7 @@ A tabela abaixo descreve as etapas; todas passaram nos dois ciclos.
 | `00-partition` | **Passou** | GPT, ESP/swap/raiz, `mkfs`, mount — num disco virtio |
 | `01-stage3` | **Passou** | Import da chave releng + conferencia de fingerprint, pointer assinado, download, `gpg --verify` do `.asc`, `sha256sum --check`, extracao. `stage3.identity` gravado com o sha256 real |
 | `02-portage-config` | **Passou** | `make.conf` e `package.license` escritos de fora do chroot |
-| `03-chroot-setup` | **Passou** | `emerge-webrsync` + sync, perfil `23.0`, locale, `fstab` por UUID (ESP em `/efi` `umask=0077` passno 2, raiz passno 1, swap). News reportadas e **nao** marcadas como lidas (`count new` = 1) |
+| `03-chroot-setup` | **Passou** | `emerge-webrsync` + sync, perfil `23.0`, locale, `fstab` por UUID (ESP em `/efi` `umask=0077` passno 2, raiz passno 0 em btrfs e 1 nos demais, swap). News reportadas e **nao** marcadas como lidas (`count new` = 1) |
 | `04-kernel` | **Passou** | `eselect kernel` por versao, `merge_config` + `olddefconfig`, **`verify_kconfig` aprovou**, kernel 6.18.48 compilado, `modules_install`, `depmod`, e `make install` gravando `vmlinuz-6.18.48-gentoo` |
 | `05-bootloader` | **Passou** | `grub-install` UEFI, entrada de NVRAM criada no OVMF (`Boot0002* gentoo`), `grub-mkconfig` validado com `grub-script-check` |
 | `06-users-services` | **Passou** | Hostname, `/etc/hosts`, keymap, **`passwd` interativo atraves do chroot**, usuario + grupos, `dosfstools`, servicos no runlevel |
@@ -68,8 +68,8 @@ NVRAM registrou a entrada. No boot, `fsck.fat` rodou na ESP com sucesso — o qu
 so e possivel porque a etapa `06` instala `sys-fs/dosfstools` (a ESP tem
 `passno 2` no fstab; sem `fsck.vfat` o `localmount` do OpenRC nao subiria).
 
-**Nove bugs reais encontrados pelos dois ciclos**, todos corrigidos. Os cinco do
-Ciclo 1:
+**Oito bugs reais encontrados pelos dois primeiros ciclos**, todos corrigidos.
+Os cinco do Ciclo 1:
 
 1. **Guarda de disco funcionando** — a VM usa `/dev/vda` e o `TARGET_DISK`
    default e `/dev/nvme0n1`. O instalador **abortou** em vez de adivinhar
@@ -102,10 +102,10 @@ O **Ciclo 2** (reinstalacao sobre disco usado) encontrou mais tres, resumidos:
    travando o emerge no autounmask.
 8. **`libglvnd[X]`**, ultima dependencia de `nvidia-drivers[X]`.
 
-**Nenhum dos nove e detectavel por analise estatica.** Uns exigem executar
+**Nenhum dos oito e detectavel por analise estatica.** Uns exigem executar
 comandos externos, outros observar o *efeito* de um comando que sai com 0, um
 exige medir o **custo** de um resume, e um exige um humano tentando fazer login.
-A auditoria adversarial de 13 dimensoes, o `bash -n` e o ShellCheck passaram por
+A auditoria adversarial de 7 dimensoes, o `bash -n` e o ShellCheck passaram por
 cima de **todos**.
 
 ### O que ja rodou no hardware alvo **[BARE-METAL-OK]**
@@ -129,7 +129,7 @@ direita, que diz exatamente o que foi visto.
 
 | Verificacao | Estado |
 |---|---|
-| Instalacao limpa com o codigo ATUAL, sem intervencao | **NUNCA** — o ciclo bare metal exigiu **intervencao manual em 8 pontos** |
+| Instalacao limpa com o codigo ATUAL, sem intervencao | **NUNCA** — o ciclo bare metal do instalador **base** exigiu **intervencao manual em 8 pontos**; somando o modulo `desktop/` e a etapa 16 sao **20 ao todo** |
 | Reprodutibilidade de qualquer coisa acima | **NUNCA** — cada linha do quadro `[BARE-METAL-OK]` foi observada **uma** vez |
 | **Audio** | **NUNCA testado.** O PipeWire foi configurado (rota launcher), mas nenhum som foi reproduzido |
 | Suspend/resume | **NUNCA** — nem em VM, nem no hardware |
@@ -146,8 +146,9 @@ QEMU (duas em ext4, uma em btrfs) e **uma** no hardware alvo. Sobre esta ultima
 sessao tambem rodou o modulo `desktop/`, terminando com niri sob Wayland na
 Blackwell.
 
-Isso **nao** e reprodutibilidade. O ciclo bare metal precisou de intervencao
-manual em oito pontos, e as correcoes foram escritas **durante** a execucao:
+Isso **nao** e reprodutibilidade. O ciclo bare metal do instalador base precisou
+de intervencao manual em oito pontos (vinte somando `desktop/` e a etapa 16), e
+as correcoes foram escritas **durante** a execucao:
 nenhuma instalacao completa foi feita com o codigo exatamente como esta hoje.
 A proxima execucao limpa e o teste que importa, e ela ainda nao aconteceu.
 
@@ -276,12 +277,12 @@ saida nao-numerica (`log_warn` de saida inesperada) e zero real. A afirmacao
 
 ---
 
-## Preflight de hardware **[SUPORTADO]** **[NAO VALIDADO]**
+## Preflight de hardware **[SUPORTADO]**
 
 Antes de qualquer operacao destrutiva, `preflight_hardware()` imprime uma tabela
 com um veredicto por item e aborta se algo for comprovadamente incompativel.
 
-Roda em `install.sh:512`, no inicio de `main_live()` — depois de
+Roda em `main_live()`, logo apos a validacao de variaveis — depois de
 `compute_partitions()`, **antes** de `do_reset`, `repartition_prep` e da etapa
 00. Tambem e chamado por `confirm_destruction()`, idempotente via guard
 `PREFLIGHT_DONE`.
@@ -330,6 +331,7 @@ Duas que mudam o sistema resultante e costumam ser esquecidas:
 | `ENABLE_SUDO` | `yes` | Instala `app-admin/sudo` e publica `/etc/sudoers.d/10-wheel` (`%wheel ALL=(ALL:ALL) ALL`, **com senha**). `no` e omissao: nada e instalado e nada existente e removido |
 
 | `ROOT_FS` | `btrfs` | Filesystem da raiz (`ext4`\|`xfs`\|`btrfs`). **Edite o `vars.sh`**, nao exporte no ambiente: a variavel se perde nas retomadas, e o instalador retoma varias vezes |
+| `OS_PROBER` | `yes` | Detecta outros sistemas operacionais e cria entrada de menu para eles. Liga as tres pecas de uma vez: `sys-boot/grub[mount]` em `package.use/bootloader`, o pacote `sys-boot/os-prober`, e `GRUB_DISABLE_OS_PROBER=false` no `/etc/default/grub`. `no` em VM ou maquina com um SO so. Ver ARMADILHAS secao 18 |
 
 O prompt do `ERASE` mostra o filesystem e o usuario que serao criados, alem do
 estado atual do disco. Se o `ROOT_FS` ali nao for o que voce queria, aborte —
@@ -394,12 +396,12 @@ na fase live, 03–06 so dentro do chroot.
 |---|---|---|
 | `vars.sh` | — | Somente variaveis editaveis com defaults e comentarios (sourced, nunca executado) |
 | `lib.sh` | — | Funcoes compartilhadas: logging, state/markers, `run_step`, guardas de fase, particoes, mounts, `confirm_destruction`, `preflight_hardware`, `svc_enable` |
-| `00-partition.sh` | live | GPT via sgdisk (ESP 1GiB `/efi` + swap + root, partlabels `gentoo-esp/swap/root`), mkfs (vfat/swap/ext4-ou-xfs), mount em `/mnt/gentoo` |
+| `00-partition.sh` | live | GPT via sgdisk (ESP 1GiB `/efi` + swap + root, partlabels `gentoo-esp/swap/root`), mkfs (vfat/swap + `ext4`\|`xfs`\|`btrfs` conforme `ROOT_FS`; o btrfs sai com `-O ^block-group-tree`), mount em `/mnt/gentoo` |
 | `01-stage3.sh` | live | Confere o relogio (NTP automatico se atrasado, com limite superior pela expiracao da chave), importa a chave releng num keyring de chave **unica**, baixa pointer + stage3 do flavor `$INIT_SYSTEM`, verifica GPG + sha256 + tamanho, extrai |
 | `02-portage-config.sh` | live | `make.conf` (`-march=native -O2 -pipe`, `MAKEOPTS`, `VIDEO_CARDS=nvidia`, `ACCEPT_LICENSE=@FREE`) + dirs `package.*` + licenca `NVIDIA-2025` |
 | `03-chroot-setup.sh` | chroot | `emerge-webrsync` + sync, news items, perfil eselect 23.0, timezone, locales, fstab por UUID real, `@world` opcional (`UPDATE_WORLD`) |
 | `04-kernel.sh` | chroot | gentoo-sources + linux-firmware + intel-microcode; `defconfig` + merge do fragmento + `olddefconfig` + gate `verify_kconfig`; build/install; nvidia-drivers (auto/force/skip) |
-| `05-bootloader.sh` | chroot | GRUB UEFI: `/etc/default/grub` (`intel_iommu=on`; o `root=PARTUUID=` vem do `10_linux`, nao e escrito a mao), `grub-install --efi-directory=/efi`, `grub-mkconfig` validado com `grub-script-check` e publicado atomicamente |
+| `05-bootloader.sh` | chroot | GRUB UEFI: `package.use/bootloader` com `sys-boot/grub[mount]`, emerge do grub + `sys-boot/os-prober` (`OS_PROBER`), `/etc/default/grub` (`intel_iommu=on`, `GRUB_DISABLE_OS_PROBER=false`; o `root=PARTUUID=` vem do `10_linux`, nao e escrito a mao), `grub-install --target=x86_64-efi --efi-directory=/efi` + copia de fallback `EFI/BOOT/BOOTX64.EFI`, `grub-mkconfig` validado com `grub-script-check` e publicado atomicamente |
 | `06-users-services.sh` | chroot | Hostname, `/etc/hosts`, keymap, senhas, usuario + grupos, dhcpcd/sysklogd/cronie, `svc_enable` sshd/dhcpcd; no systemd: machine-id + firstboot + `preset-all` enable-only |
 | `install.sh` | ambas | Orquestrador: preflight, 00→02 no live, mounts do chroot, re-entrada com `--chroot`, 03→06 dentro do alvo |
 | `kernel-fragment.config` | — | Fragmento Kconfig comentado por bloco (Alder Lake, B760, NVMe built-in, handoff NVIDIA, IOMMU, EFI, virtio para a VM) |
@@ -419,7 +421,9 @@ na fase live, 03–06 so dentro do chroot.
 | `tests/test-root-fs.sh` | host | Filesystem REAL da raiz manda sobre `ROOT_FS`; 03 e 06 usam a mesma autoridade |
 | `tests/test-profile-detection.sh` | host | Perfil vem do symlink canonico, nao da posicao das linhas do `eselect` |
 | `tests/test-all-vars.sh` | host | Toda variavel de `vars.sh` atravessa para o chroot (`ALL_VARS` + `SECRET_VARS`) |
-| `tests/test-steps-invariants.sh` | host | Flags de resume, sentinela do sync, `NVIDIA_MODE=skip` como omissao, branch systemd |
+| `tests/test-steps-invariants.sh` | host | Flags de resume, sentinela do sync, `NVIDIA_MODE=skip` como omissao, branch systemd, os-prober/dual-boot da etapa 05 |
+| `tests/test-desktop.sh` | host | Modulo `desktop/`: USE e keywords declaradas, ordem das etapas, nenhum `--autounmask-write`, artefatos QML |
+| `tests/test-desktop-dryrun.sh` | host | `DESKTOP_DRY_RUN=yes` nao escreve arquivo nem chama comando mutavel |
 
 A suite do host cobre **configuracao, guardas de disco e invariantes de
 estado** — nao comportamento de runtime. Nenhum teste particiona, monta, baixa
@@ -604,9 +608,9 @@ Consequencias praticas:
 
 ## Receita QEMU/libvirt **[QEMU-OK — instalacao completa + boot]**
 
-> Esta receita **nunca foi rodada**. Ela e o plano de validacao, nao um relato
-> de validacao. Mesmo se passar por inteiro, ela nao valida nada da lista
-> [SO BARE METAL] acima.
+> Os tres ciclos em QEMU/OVMF foram executados por este caminho, com boot. O que
+> ela **nao** valida e nada da lista [SO BARE METAL] acima: firmware ASUS, GPU
+> Blackwell fisica, NVMe real.
 
 Requisitos **obrigatorios**:
 

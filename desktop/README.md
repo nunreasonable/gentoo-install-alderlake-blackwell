@@ -13,13 +13,17 @@ instalador base (`install.sh`, `lib.sh`, `vars.sh`, `00-06`,
 
 ## ESTADO DE VALIDACAO — leia isto primeiro
 
-**NADA deste modulo foi executado. Nem em QEMU, nem em bare metal.**
+**Este modulo JA foi executado em bare metal** — 2026-09-02 (etapas 10-15) e
+2026-09-03 (etapa 16), com a sessao niri subindo sob Wayland na RTX 5060 Ti.
+Nao rodou **limpo** em nenhuma das duas: foram 9 bugs corrigidos na primeira e
+12 na segunda, todos escritos **durante** a execucao. Nenhuma das 21 correcoes
+foi reexecutada. Registro completo em [`../docs/VALIDACAO.md`](../docs/VALIDACAO.md).
 
-Nao existe "validado" neste documento porque nao existe execucao. O que foi feito
-foi verificacao **estatica**:
+Este paragrafo dizia "NADA deste modulo foi executado" ate 2026-09-09, muito
+depois de deixar de ser verdade. Alem da execucao, ha verificacao **estatica**:
 
-- asercoes em `tests/test-desktop.sh` e `tests/test-desktop-dryrun.sh`
-  (total da suite: 444, 0 falhas);
+- asercoes em `tests/test-desktop.sh` (405) e `tests/test-desktop-dryrun.sh`
+  (12), dentro de uma suite de 659 em 13 grupos;
 - `bash -n` em todos os arquivos de `desktop/`;
 - ShellCheck reduzido a 5 `SC1091` inevitaveis (o linter nao segue `source` de
   `../lib.sh`);
@@ -132,9 +136,10 @@ Os pacotes efetivos dependem das escolhas em `vars-desktop.sh`. Com os defaults:
 - `gui-apps/xwayland-satellite` (GURU) + `x11-base/xwayland`
 
 **Interface**
-- `gui-apps/foot` (terminal default — ver justificativa abaixo)
+- `x11-terms/kitty` (terminal **default**, `USE="wayland -X"`); `gui-apps/foot` e o
+  `DESKTOP_RECOVERY_TERMINAL` — ver justificativa abaixo
 - `gui-apps/fuzzel` (launcher, GURU)
-- `gui-apps/waybar` com `USE=niri`
+- `gui-apps/waybar` com `USE="niri tray pipewire network -systemd -pulseaudio"`
 - `gui-apps/mako` (notificacoes)
 
 **Portais e audio**
@@ -226,7 +231,8 @@ Servicos e grupos:
 ./desktop/install-desktop.sh
 ```
 
-Roda, nesta ordem: **10 -> 11 -> 12 -> 13 -> 15 -> 14**.
+Roda, nesta ordem: **10 -> 11 -> 12 -> 13 -> 15 -> 14 -> 16**
+(`ORDEM_ETAPAS` em `install-desktop.sh`). A 16 e a **ultima**, nao antes da 14.
 
 | Etapa | Script | O que faz |
 |---|---|---|
@@ -236,8 +242,8 @@ Roda, nesta ordem: **10 -> 11 -> 12 -> 13 -> 15 -> 14**.
 | 12 | `12-niri-stack.sh` | niri, terminal, launcher, xwayland, barra, portais, audio |
 | 13 | `13-services.sh` | seatd/dbus, grupos, PAM, `XDG_RUNTIME_DIR`, servicos de audio |
 | 15 | `15-validate.sh` | **validacao pre-reboot** — portao |
-| 16 | `16-clavis.sh` | **Clavis Shell** (padrao): quickshell + key-cli + keytop + fontes |
 | 14 | `14-dotfiles.sh` | dotfiles e aparencia |
+| 16 | `16-clavis.sh` | **Clavis Shell** (padrao): quickshell + key-cli + keytop + fontes |
 
 **A ordem nao e numerica, e isso e deliberado:**
 
@@ -330,11 +336,12 @@ neste modulo foi.
 Todas em `vars-desktop.sh`, sobrescritiveis pelo ambiente:
 
 ```sh
-DESKTOP_USER=rodrigo          # dono da sessao grafica (detectado se vazio)
+DESKTOP_USER=                 # vazio de proposito: detectado se nao definido
 DESKTOP_SEAT_PROVIDER=seatd   # seatd | elogind
-DESKTOP_TERMINAL=foot         # foot | alacritty | kitty
-DESKTOP_BAR=waybar            # waybar | none
-DESKTOP_NOTIFY=mako           # mako | none | swaync
+DESKTOP_TERMINAL=kitty        # foot | alacritty | kitty
+DESKTOP_BAR=waybar            # waybar | none  (DESKTOP_CLAVIS=yes forca none)
+DESKTOP_NOTIFY=mako           # mako | none | swaync  (idem)
+DESKTOP_CLAVIS=yes            # Clavis como shell padrao (etapa 16)
 DESKTOP_ENABLE_SCREENCAST=yes
 DESKTOP_ENABLE_XWAYLAND=yes
 DESKTOP_ASSUME_YES=no         # yes pula os prompts das acoes caras
@@ -618,7 +625,7 @@ do projeto.
 | `15-validate.sh` | validacao pre-reboot (portao) |
 | `16-clavis.sh` | Clavis Shell: compila do git, venv do key-cli, overlay local de fonte |
 | `overlay/` | overlay LOCAL com `media-fonts/material-symbols` (nao existe no Portage) |
-| `../tests/test-desktop.sh` | 393 asercoes estaticas sobre este modulo |
+| `../tests/test-desktop.sh` | 405 asercoes estaticas sobre este modulo |
 
 ### A armadilha central do `lib-desktop.sh`
 
@@ -644,15 +651,19 @@ nao-vazio e valida disco/particoes irrelevantes aqui).
 
 ## Resumo honesto
 
-Este modulo foi escrito com cuidado, tem 393 asercoes estaticas, falha cedo com
-mensagens acionaveis e recusa rodar na fase errada. **Nada disso e o mesmo que
-funcionar.**
+Este modulo tem 405 asercoes estaticas, falha cedo com mensagens acionaveis e
+recusa rodar na fase errada. **Nada disso e o mesmo que funcionar** — e o que
+prova que funciona e a execucao de 2026-09-02/03, que aconteceu.
 
-A primeira execucao no hardware e o primeiro teste real. Espere encontrar
-problemas — em especial no caminho EGL/GBM da NVIDIA e no handoff de console. O
-modulo foi construido para que esses problemas aparecam **com o TTY ainda
-funcionando e com uma mensagem que diz o que fazer**, em vez de uma tela preta
-sem console.
+O que ela provou: a sessao niri sobe sob Wayland na Blackwell, o
+`/dev/dri/renderD128` e aberto pelo compositor, e o Clavis Shell inicia. O que
+ela **nao** provou: que o modulo roda sem intervencao. Foram 21 pontos de
+correcao manual entre as duas sessoes, e nenhum foi reexecutado — a proxima
+execucao limpa continua sendo o teste que falta.
+
+Espere problemas no caminho EGL/GBM da NVIDIA e no handoff de console. O modulo
+foi construido para que aparecam **com o TTY ainda funcionando e com uma mensagem
+que diz o que fazer**, em vez de uma tela preta sem console.
 
 Nao reinicie a maquina esperando que algo melhore sozinho. Rode a etapa 15
 primeiro.

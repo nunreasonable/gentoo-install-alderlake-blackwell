@@ -7,11 +7,12 @@ que fazer quando der errado.
 Le-se na ordem. As secoes 1–4 sao **antes de rodar o instalador**, as 5–7 sao
 **antes do primeiro reboot**, as 8–12 sao **no primeiro boot**, as 13–15 sao
 **recuperacao e limpeza** (retomar apos falha, hashes de senha que sobram,
-retomar com outra versao do instalador). A 16 e especifica de **btrfs** e a 17
-trata de arquivos em `/boot` que o GRUB confunde com kernels. As 18-21 sao do
-**modulo `desktop/`** (iwd sem cripto no kernel, `XDG_RUNTIME_DIR`, como testar
-a sessao do niri e as sub-etapas de rede da etapa 16) e so importam depois do
-primeiro boot.
+retomar com outra versao do instalador). A 16 e especifica de **btrfs**, a 17
+trata de arquivos em `/boot` que o GRUB confunde com kernels e a 18 e de
+**dual-boot** (por que o GRUB ignora os outros discos em silencio). As 19-22 sao
+do **modulo `desktop/`** (iwd sem cripto no kernel, `XDG_RUNTIME_DIR`, como
+testar a sessao do niri e as sub-etapas de rede da etapa 16) e so importam
+depois do primeiro boot.
 
 > **Regra de ouro deste projeto:** houve **uma** execucao em hardware real
 > (2026-09-02, base + `desktop/`; a etapa 16 em 2026-09-03), com intervencao
@@ -105,7 +106,7 @@ Confirme a identidade fisica pelo modelo e serial, que **nao** mudam entre
 boots:
 
 ```sh
-lsblk -ndo NAME,MODEL,SERIAL,SIZE /dev/nvme0n1
+lsblk -ndo MODEL,SERIAL,SIZE /dev/nvme0n1
 ```
 
 Prefira apontar o `vars.sh` para o symlink estavel em vez do nome de kernel:
@@ -409,7 +410,7 @@ mostra o simpledrm registrando o framebuffer.
 
 ```sh
 # 1) habilite o modeset do nvidia-drm (via SSH ou console da iGPU)
-echo 'options nvidia_drm modeset=1' > /etc/modprobe.d/nvidia-drm.conf
+echo 'options nvidia_drm modeset=1' > /etc/modprobe.d/zz-nvidia-desktop.conf
 ```
 
 Se nao resolver, tire o simpledrm do caminho pela cmdline, em
@@ -533,8 +534,9 @@ intel_pstate
 
 **Se `current_driver` disser `acpi_idle`:** recompile com
 `CONFIG_INTEL_IDLE=y` antes de considerar a maquina pronta. O fragmento ja pede
-esse simbolo e o `verify_kconfig` ja o exige — se mesmo assim caiu em
-`acpi_idle`, a causa e outra (ver `dmesg | grep -i idle`).
+esse simbolo e o `verify_kconfig` o exige desde 2026-09-09 — um kernel compilado
+**antes** disso pode nao te-lo. Se o simbolo esta no `.config` e mesmo assim caiu
+em `acpi_idle`, a causa e outra (ver `dmesg | grep -i idle`).
 
 ---
 
@@ -583,16 +585,23 @@ NVIDIA proprietario + DRM. **Zero cobertura neste repositorio.**
 ```sh
 echo 'options nvidia NVreg_PreserveVideoMemoryAllocations=1' \
   > /etc/modprobe.d/nvidia-suspend.conf
-systemctl enable nvidia-suspend.service nvidia-resume.service nvidia-hibernate.service
 ```
 
-(No OpenRC, os equivalentes vem no proprio pacote `nvidia-drivers`.)
+Este projeto e **OpenRC** (`INIT_SYSTEM=openrc` no `vars.sh`), entao **nao** ha
+`systemctl enable nvidia-suspend.service`. No OpenRC os hooks de suspend vem do
+proprio `nvidia-drivers`, em `/lib64/elogind/system-sleep/` ou
+`/etc/elogind/system-sleep/`, e sao executados pelo elogind. Confira que estao
+la:
+
+```sh
+ls /lib64/elogind/system-sleep/ /etc/elogind/system-sleep/ 2>/dev/null
+```
 
 **Teste com todo o trabalho salvo**, num console TTY **sem sessao grafica
 aberta**, para que uma falha nao derrube trabalho real:
 
 ```sh
-systemctl suspend
+loginctl suspend        # elogind; no systemd seria systemctl suspend
 ```
 
 ---
@@ -718,8 +727,16 @@ grep -l 'PASSWORD_HASH' /root/gentoo-install/* 2>/dev/null
 ls -l /root/gentoo-install/secrets.env 2>/dev/null
 ```
 
-Ambos devem sair vazios. O `vars.sh` que fica em `/root/gentoo-install/`
-**nao** contem hashes — ele so declara os nomes com valor vazio.
+O segundo tem de sair vazio. O **primeiro acha o `vars.sh`**, e isso e
+esperado: o `install.sh` escreve ali `: "${ROOT_PASSWORD_HASH:=}"` e
+`: "${USER_PASSWORD_HASH:=}"`, ou seja, os **nomes** com valor vazio. O que nao
+pode aparecer e um hash de verdade depois do `=`. Confira o conteudo:
+
+```sh
+grep 'PASSWORD_HASH' /root/gentoo-install/vars.sh
+```
+
+Esperado: as duas linhas terminando em `:=}"`, sem nada entre `:=` e `}`.
 
 **Nota:** o `vars.sh` do **seu** diretorio de trabalho (de onde voce rodou o
 instalador) e seu. Se voce escreveu hashes ali, eles continuam ali; o
@@ -935,7 +952,80 @@ Toda linha listada tem de apontar para um `vmlinuz-*` de verdade.
 
 ---
 
-## 18. `iwd` em `crashed`: falta simbolo de cripto no kernel
+## 18. Dual-boot: o GRUB ignora os outros discos em silencio
+
+**O que pode dar errado:** a instalacao termina, o menu do GRUB aparece, e o
+outro sistema operacional da maquina simplesmente **nao esta la**. Nenhum erro,
+nenhum aviso, nenhuma linha no log. O `grub-mkconfig` roda, reporta sucesso, e o
+menu sai so com o Gentoo.
+
+**Por que:** desde o GRUB 2.06 (2021, resposta ao CVE-2020-14372) o os-prober
+vem **desligado por default**. O `/etc/grub.d/30_os-prober` continua instalado e
+continua sendo executado — ele so verifica `GRUB_DISABLE_OS_PROBER` e sai calado.
+Sem a linha no `/etc/default/grub` nao ha o que detectar.
+
+Sao **tres** pecas, e nenhuma delas e default. Faltando qualquer uma, o
+resultado e o mesmo menu sem o outro sistema:
+
+1. `sys-boot/grub[mount]` — o os-prober usa o `grub-mount` para abrir por FUSE
+   os filesystems dos outros sistemas sem depender do kernel montar cada um.
+   E uma dependencia **dura**: `sys-boot/os-prober` exige `sys-boot/grub[mount]`.
+   Sem a USE declarada, o `emerge sys-boot/os-prober` **aborta** pedindo
+   `--autounmask-write` e nada e instalado.
+2. `sys-boot/os-prober` — o pacote em si.
+3. `GRUB_DISABLE_OS_PROBER=false` no `/etc/default/grub`.
+
+O `05-bootloader.sh` faz as tres quando `OS_PROBER=yes` (o default): a sub-etapa
+`05-grub-use` escreve o `package.use/bootloader` **antes** do emerge, o
+`05-grub-emerge` instala o pacote, e o `05-default-grub` escreve a linha.
+
+**Verifique**, depois da etapa 05 e antes do reboot:
+
+```sh
+command -v grub-mount os-prober
+grep GRUB_DISABLE_OS_PROBER /etc/default/grub
+grep -cE '^[[:blank:]]*(menuentry|submenu)' /boot/grub/grub.cfg
+```
+
+Esperado: os dois binarios com caminho, `GRUB_DISABLE_OS_PROBER=false`, e mais
+menuentries do que as do Gentoo sozinho. A etapa 05 tambem imprime a contagem no
+log — `os-prober: N entrada(s) de outros sistemas no menu` — ou avisa quando nao
+achou nenhuma.
+
+**O os-prober rodando dentro do chroot nem sempre enxerga os outros discos.**
+Ele depende de `/dev`, `/proc` e `/sys` (que o `install.sh` rbinda) e de
+conseguir montar temporariamente as particoes alheias. Quando nao consegue, o
+resultado e indistinguivel de "nao ha outro SO": menu sem as entradas, sem erro.
+Por isso a etapa 05 **avisa** em vez de falhar — zero outros sistemas e um
+resultado legitimo numa maquina com um SO so. Se voce **tem** outro sistema e
+ele nao apareceu, regenere ja com o Gentoo bootado:
+
+```sh
+grub-mkconfig -o /boot/grub/grub.cfg
+```
+
+**O os-prober monta as particoes dos outros sistemas somente-leitura.** Ele nao
+escreve neles e nao mexe na ESP deles. Se o outro sistema tem ESP propria (o
+caso comum em dual-boot com dois discos), ela continua intocada: o menuentry
+gerado e um `chainloader` para o bootloader dele, no disco dele.
+
+**Por que o `probe_grub_cfg` nao reprova as entradas dos outros sistemas.** O
+`grub_cfg_root_ok` exige que toda linha `linux` tenha exatamente um `root=` e
+que ele seja o PARTUUID real da nossa raiz — sem initramfs, um `root=` errado e
+maquina que nao boota. Mas as menuentries que o `30_os-prober` acrescenta
+carregam o `root=` **do outro sistema**, que e legitimamente diferente. Por isso
+a funcao filtra pelas linhas que citam o nosso `vmlinuz-<versao>` antes de
+validar. Sem esse filtro, ligar o os-prober faria o probe reprovar um `grub.cfg`
+correto — e o `run_step` mata a etapa nesse caso, com
+`[05-grub-cfg] do_fn terminou mas o probe ainda reporta nao-feito`.
+
+**Para desligar** (VM, ou maquina com um SO so): `OS_PROBER=no` no `vars.sh`. A
+etapa passa a escrever `GRUB_DISABLE_OS_PROBER=true`, remove o
+`package.use/bootloader` e nao instala o pacote.
+
+---
+
+## 19. `iwd` em `crashed`: falta simbolo de cripto no kernel
 
 **O que pode dar errado:** o sistema boota, o `iwlwifi` carrega, a interface
 aparece — e o `iwd` nao sobe. Numa maquina sem cabo, isso e ficar sem rede logo
@@ -976,10 +1066,25 @@ existir, use `/boot/config-$(uname -r)` ou `/usr/src/linux/.config`.
 desde 2026-09-02. Um kernel compilado **antes** dessa data nao os tem, e a
 correcao e recompilar:
 
+**Isso nao se faz pelo sistema bootado.** Duas razoes, as duas duras:
+`/root/gentoo-install/` e uma **copia** dos scripts, sem `.git`, entao o
+`git pull` ali nao funciona; e `--chroot` exige a sentinela
+`/etc/gentoo-install/.inside-chroot`, que o `install.sh` apaga ao terminar — sem
+ela o script aborta com *"este script deve rodar DENTRO do chroot"*. Rodar
+`--only 4` sem `--chroot` tambem nao serve: ele entra no chroot de
+`$TARGET_ROOT` (`/mnt/gentoo`), que num sistema bootado nao existe.
+
+Boote o **live ISO** e rode de la, do seu checkout:
+
 ```sh
-cd /root/gentoo-install && git pull
-./install.sh --chroot --only 4     # ja dentro do sistema instalado
+cd gentoo-install-alderlake-blackwell && git pull
+./install.sh --only 4     # monta o alvo, entra no chroot, roda so a etapa 04
 ```
+
+O `--only` monta `$TARGET_ROOT` sozinho (`ensure_target_mounts`) e **mantem** a
+sentinela de fase no fim, porque nao cobriu as etapas 03-06 inteiras. Depois de
+rebootar no sistema novo, rode `./install.sh` sem `--only` do live ISO se quiser
+fechar a fase, ou apague a sentinela a mao.
 
 O `verify_kconfig` agora reprova antes de compilar se algum faltar.
 
@@ -988,7 +1093,7 @@ O `verify_kconfig` agora reprova antes de compilar se algum faltar.
 
 ---
 
-## 19. `XDG_RUNTIME_DIR` ausente: a sessao grafica nao sobe
+## 20. `XDG_RUNTIME_DIR` ausente: a sessao grafica nao sobe
 
 **O que pode dar errado:** o `niri` morre no arranque com um panic de Rust que
 **nao menciona** o shell nem o diretorio:
@@ -1048,7 +1153,7 @@ escrito.
 
 ---
 
-## 20. `niri --session` roda como o USUARIO, nunca como root
+## 21. `niri --session` roda como o USUARIO, nunca como root
 
 **O que pode dar errado:** voce testa a sessao com `sudo` ou de um shell de root
 e conclui que o modulo esta quebrado. Sao dois erros distintos, os dois com
@@ -1088,7 +1193,7 @@ flag ligada, o `.desktop` instalado aponta para o script errado.
 
 ---
 
-## 21. Sub-etapas de rede: falha de DNS nao e bug do instalador
+## 22. Sub-etapas de rede: falha de DNS nao e bug do instalador
 
 **Sintoma**, na etapa 16:
 

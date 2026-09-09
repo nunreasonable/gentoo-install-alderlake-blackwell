@@ -39,7 +39,7 @@ RTX 5060 Ti 16GB (Blackwell) · 32 GiB · NVMe · **kernel sem initramfs**
 |---|---|
 | raiz | Instalador base, etapas `00`–`06` + `install.sh` + `lib.sh` + `vars.sh` |
 | `desktop/` | Módulo **pós-instalação** (niri/Wayland), etapas `10`–`16` |
-| `tests/` | Suíte do host, 642 asserções. Nada aqui executa o instalador |
+| `tests/` | Suíte do host, 659 asserções em 13 grupos. Nada aqui executa o instalador |
 | `docs/` | `VALIDACAO.md` (o que rodou), `ARMADILHAS.md` (manual de operação), `PROXIMOS-PASSOS.md` (estado atual) |
 
 ---
@@ -90,7 +90,7 @@ existir, o runner avisa e pula — não invente que passou.
 ## As armadilhas que já morderam este projeto
 
 Trinta e cinco bugs reais foram encontrados **executando** o instalador.
-`bash -n`, ShellCheck e uma auditoria adversarial de 13 dimensões passaram por
+`bash -n`, ShellCheck e uma auditoria adversarial de 7 dimensões passaram por
 cima de **todos os trinta e cinco**. Registro completo em `docs/VALIDACAO.md`.
 
 Os padrões que se repetem — desconfie deles em qualquer código novo:

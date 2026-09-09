@@ -20,15 +20,22 @@ metal e ter as doze correções levadas de volta para o repositório.
 | WiFi (`iwd`) no sistema instalado | **Funcionando**, após corrigir 4 símbolos de cripto no kernel |
 | Áudio | **Funcionando** — PipeWire 1.6.8 + WirePlumber respondem ao `wpctl status` |
 
-Suíte do host: `./tests/run-tests.sh` → 642 asserções. Testes estáticos não
+Suíte do host: `./tests/run-tests.sh` → 659 asserções em 13 grupos (658 passam aqui; a que falha é o falso positivo abaixo). Testes estáticos não
 provam boot.
 
 Duas ressalvas medidas nesta máquina: o grupo **ShellCheck** é pulado (nem
 `shellcheck` nem `podman` estão instalados aqui), e o **test-desktop-dryrun**
-reprova com um falso positivo — ele acusa `/etc/portage/package.use/desktop-niri`
-como "criado pelo dry-run" quando o arquivo é da instalação real. O próprio teste
-avisa que é inconclusivo neste host. **A suíte só fecha limpa fora da máquina
-alvo.**
+reprova **sempre** — ele acusa `/etc/portage/package.use/desktop-niri` como
+"criado pelo dry-run" quando o arquivo é da instalação real. **A suíte só fecha
+limpa fora da máquina alvo.**
+
+Não trate isso como ruído inofensivo: a mesma linha que produz o falso positivo
+produz um **falso negativo**. Neste host, um dry-run que de fato escrevesse
+naquele caminho daria a mesma saída da falha conhecida — indistinguível. Ou
+seja, a checagem que existe para provar que o dry-run não toca em produção
+deixou de provar isso justamente aqui. Mecanismo, risco e a correção pendente
+em [VALIDACAO.md](VALIDACAO.md), seção "A falha permanente do
+`test-desktop-dryrun` nesta máquina".
 
 ---
 
@@ -74,20 +81,34 @@ speaker-test -c2 -twav        # o teste que importa
 
 ## Os discos desta máquina
 
-Verificado em 2026-09-01:
+Verificado em 2026-09-09, com o Gentoo já instalado e em execução:
 
 ```
-nvme1n1  931.5G   ← FEDORA
-├─p1       600M   vfat    /boot/efi
-├─p2         2G   ext4    /boot
-└─p3     928.9G   btrfs   /  e  /home     (dois subvolumes, mesmo device)
+nvme0n1  465.8G   ← GENTOO (este sistema) — foi o disco escolhido
+├─p1         1G   vfat    /efi        ESP
+├─p2        16G   swap    [SWAP]
+└─p3     448.8G   btrfs   /           (volume único, sem subvolumes)
 
-nvme0n1  465.8G   ← DADOS
-└─p1     465.8G   xfs     /mnt/data
+nvme1n1  931.5G   ← FEDORA 44 — não tocar
+├─p1       600M   vfat                ESP própria (\EFI\fedora\shimx64.efi)
+├─p2         2G   ext4                /boot do Fedora
+└─p3     928.9G   btrfs               /  e  /home (subvolumes, mesmo device)
+
+sda      931.5G   ← DADOS
+└─sda1   931.5G   ext4    /mnt/HDD
 ```
 
-`TARGET_DISK` no `vars.sh` está em **`/dev/nvme0n1`** (o de dados). Não foi
-alterado — a decisão de qual disco apagar ficou em aberto.
+`TARGET_DISK` no `vars.sh` está em **`/dev/nvme0n1`**, que é o disco desta
+instalação. A decisão foi tomada: o Gentoo ficou no NVMe de 465.8G.
+
+O `nvme1n1` é o **Fedora de socorro** e não entra em nenhum plano de
+reparticionamento, formatação ou realocação de swap. Ele tem ESP própria
+(`nvme1n1p1`, separada da nossa), e é por ele que se volta a ter máquina
+utilizável se este Gentoo quebrar. O `os-prober` da etapa 05 monta as partições
+dele **somente-leitura** para gerar o menuentry — ver ARMADILHAS seção 18.
+
+O disco de dados mudou de lugar em relação à nota anterior: não é mais uma
+partição xfs no `nvme0n1`, é o `sda1` ext4 montado em `/mnt/HDD`.
 
 **Antes de digitar `ERASE`, sempre:**
 

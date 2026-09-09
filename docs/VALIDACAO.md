@@ -17,7 +17,7 @@ leitura de codigo.
 | Instalacoes em **bare metal** | **1 completa + boot** (2026-09-02), seguida do modulo `desktop/` e da etapa 16 (2026-09-03) |
 | Bugs encontrados por execucao | **35** (34 no codigo, 1 de ergonomia) |
 | Bugs encontrados por analise estatica | **0** dos 35 acima |
-| Suite de testes do host | 13 grupos, **642 asercoes** |
+| Suite de testes do host | 13 grupos, **659 asercoes** (658 passam nesta maquina; a restante e o falso positivo do `test-desktop-dryrun`) |
 | Validado em hardware fisico | Base + `desktop/` + etapa 16, **uma execucao cada**, com intervencao manual em 20 pontos |
 
 O numero que mais importa esta na terceira linha. `bash -n`, ShellCheck e uma
@@ -930,7 +930,7 @@ Could not resolve host: github.com (Timeout while contacting DNS servers)
 O DNS do roteador engasgou. Nao ha defeito de codigo: as duas sub-etapas fazem
 rede (`pip install` de URL git e `git fetch`) e nao sao idempotentes contra
 falha de resolucao. O re-run passou. Procedimento e fallback de DNS em
-[ARMADILHAS.md](ARMADILHAS.md), secao 21.
+[ARMADILHAS.md](ARMADILHAS.md), secao 22.
 
 O `16-keytop` se comportou **exatamente como projetado**: a falha nao derrubou
 a etapa, o marker gravou `skipped` e o operador foi avisado. Como o
@@ -973,6 +973,75 @@ nunca o comportamento. Verde aqui significa "a correcao continua escrita".
 
 ---
 
+## Dual-boot: os-prober na etapa 05 (2026-09-09)
+
+**Honestidade sobre o que foi executado.** A etapa 05 **nao** foi re-executada
+numa instalacao. O que rodou de verdade foi: a suite do host inteira, e um teste
+dirigido que **executa** a funcao `grub_cfg_root_ok` extraida do
+`05-bootloader.sh` contra `grub.cfg` sinteticos. O resto abaixo e leitura de
+codigo e do estado da maquina em execucao, e esta marcado como tal.
+
+**O pedido:** o GRUB desta maquina nao lista o Fedora do `nvme1n1`. Faltavam tres
+coisas no instalador, todas ausentes da arvore inteira (`grep -rn os-prober` nao
+retornava nada): a USE flag `sys-boot/grub[mount]`, o pacote
+`sys-boot/os-prober`, e `GRUB_DISABLE_OS_PROBER=false`.
+
+**O que a leitura de codigo encontrou, e que nao estava no pedido.** Ligar as
+tres pecas **quebraria a etapa 05**. O `grub_cfg_root_ok` percorria *todas* as
+linhas `linux ` do `grub.cfg` exigindo que cada uma tivesse exatamente um
+`root=` igual ao PARTUUID da nossa raiz. As menuentries que o `30_os-prober`
+acrescenta carregam o `root=` do outro sistema. O probe reprovaria, e o
+`run_step` (`lib.sh`) nao tolera probe reprovado depois do `do_fn`: mata a etapa
+com `[05-grub-cfg] do_fn terminou mas o probe ainda reporta nao-feito`.
+
+Ou seja: a correcao "obvia" trocaria *"o GRUB nao detecta o outro SO"* por
+*"a etapa 05 falha"* — um sintoma pior, e que so apareceria na primeira
+instalacao numa maquina com dois sistemas.
+
+**A correcao.** `grub_cfg_root_ok` filtra pelas linhas que citam
+`vmlinuz-$KERNEL_RELEASE` antes de validar. O invariante que importa — a **nossa**
+entrada aponta para o PARTUUID real da raiz — continua sendo aplicado igual; ele
+so deixa de valer para entradas que legitimamente tem outro `root=`.
+
+**A evidencia executada.** A funcao foi extraida do arquivo (versao do `HEAD` e
+versao corrigida) e rodada contra quatro `grub.cfg` sinteticos:
+
+| `grub.cfg` | Antes (HEAD) | Depois |
+|---|---|---|
+| so a nossa entrada | aprova | aprova |
+| a nossa + uma do Fedora (`root=UUID=...`) | **reprova** | **aprova** |
+| so a do Fedora, sem entrada nossa | reprova | reprova |
+| a nossa com dois `root=` | reprova | reprova |
+
+As duas ultimas linhas sao as redes de seguranca que **nao** podiam afrouxar: um
+`grub.cfg` sem entrada nossa, e o bug do `root=` duplicado que o comentario do
+`probe_default_grub` documenta. As seis asercoes que guardam essa matriz estao
+em `tests/test-steps-invariants.sh`.
+
+**O que mudou no codigo:** sub-etapa nova `05-grub-use` (escreve
+`/etc/portage/package.use/bootloader` **antes** do emerge — sem isso o
+`emerge sys-boot/os-prober` aborta pedindo `--autounmask-write`, que este
+projeto proibe), `05-grub-emerge` instala o pacote e verifica o binario depois,
+`05-default-grub` escreve a linha, e a variavel `OS_PROBER` (default `yes`)
+liga/desliga as tres de uma vez.
+
+**O que NAO da para guardar com teste estatico:**
+
+| Defeito | Por que nenhum teste de host o pegaria |
+|---|---|
+| O `emerge` abortando no autounmask | Depende do grafo que o Portage resolve com a arvore instalada. A asercao confere que escrevemos `sys-boot/grub mount`; que isso *satisfaz* a dependencia do os-prober, so o `emerge` sabe |
+| O os-prober nao enxergar os outros discos **dentro do chroot** | Depende de `/dev`, `/proc`, `/sys` rbindados e de conseguir montar particoes alheias em runtime. Por isso a etapa **avisa** em vez de falhar: zero outros sistemas e resultado legitimo |
+| A forma exata do menuentry gerado (`chainloader` vs `linux`) | E funcao do outro SO e do disco dele. O filtro do `grub_cfg_root_ok` foi escrito para os dois casos, mas so o primeiro `grub-mkconfig` real prova |
+
+**Divergencias entre o repo e esta maquina, registradas sem serem alteradas:**
+o autounmask ja tinha gravado `>=sys-boot/grub-2.14-r5 mount` dentro de
+`/etc/portage/package.use/steam`; `sys-boot/os-prober` ja esta no `world`; e o
+`GRUB_DISABLE_OS_PROBER=false` foi acrescentado a mao no fim do
+`/etc/default/grub`. Nada disso foi tocado — o instalador passa a produzir esse
+estado sozinho, num arquivo proprio.
+
+---
+
 ## O que continua sem validacao
 
 Esta tabela estava desatualizada: ela listava "boot em bare metal", "runtime do
@@ -1010,26 +1079,84 @@ porque houve intervencao manual no caminho.
 
 ## Suite de testes do host
 
-`./tests/run-tests.sh` — **642 asercoes**. Nenhum teste particiona, monta,
-baixa ou compila.
+`./tests/run-tests.sh` — **659 asercoes em 13 grupos**. Nenhum teste particiona,
+monta, baixa ou compila. Nesta maquina 658 passam: a que falha e o falso
+positivo do `test-desktop-dryrun`, que acusa
+`/etc/portage/package.use/desktop-niri` como "criado pelo dry-run" quando o
+arquivo e da instalacao real. O proprio teste avisa que e inconclusivo aqui.
 
-O numero estava defasado neste documento: dizia 596 quando a suite ja media 630,
-antes das 12 asercoes do Ciclo 6. Contagem escrita a mao envelhece sem avisar —
-a de agora foi medida somando as linhas `-> N pass` do runner.
+Contagem escrita a mao envelhece sem avisar: este documento ja disse 596 e 642, e
+o README dizia 596 em 11 grupos quando a suite media 642 em 13. A de agora foi
+medida somando as linhas `-> N pass` do runner, e a tabela abaixo tambem — as
+linhas por grupo estavam defasadas em quase todas as entradas.
 
 | Grupo | Asercoes | Cobre |
 |---|---|---|
-| `bash -n` | 22 | sintaxe de todos os scripts e testes |
-| ShellCheck | — | container, repo montado read-only |
-| `test-safety` | 32 | `TARGET_ROOT` canonicalizado, `AUTO_CONFIRM` nao bypassa REFORMAT, preflight antes do destrutivo, flags de `lsblk`/`findmnt` **executadas**, globais de particao |
-| `test-steps-invariants` | 35 | flags de resume, sentinela do sync, `NVIDIA_MODE=skip`, USE do nvidia, branch systemd |
+| `test-desktop` | 405 | modulo `desktop/`: USE/keywords, ordem das etapas, nenhum `--autounmask-write`, artefatos QML |
+| `test-steps-invariants` | 70 | flags de resume, sentinela do sync, `NVIDIA_MODE=skip`, USE do nvidia, branch systemd, **os-prober/dual-boot da etapa 05** |
+| `test-root-fs` | 41 | matriz `ROOT_FS` x filesystem real, e o portao `block-group-tree` do GRUB |
+| `bash -n` | 35 | sintaxe de todos os scripts e testes |
+| `test-safety` | 35 | `TARGET_ROOT` canonicalizado, `AUTO_CONFIRM` nao bypassa REFORMAT, preflight antes do destrutivo, flags de `lsblk`/`findmnt` **executadas**, globais de particao |
 | `test-state-version` | 15 | schema/commit: igual, diferente, incompativel, corrompido, ausente |
-| `test-root-fs` | 13 | matriz `ROOT_FS` x filesystem real |
 | `test-secrets` | 13 | hashes fora do `vars.sh`, modo `0600`, remocao |
+| `test-desktop-dryrun` | 12 | `DESKTOP_DRY_RUN=yes` nao escreve nem emerge (1 falso positivo em host que ja rodou o `desktop/`) |
 | `test-profile-detection` | 10 | symlink canonico, com `eselect` hostil e sem `eselect` |
 | `test-qemu-profile` | 9 | `/dev/vda` explicito, default NVMe intacto, sem autodeteccao |
 | `test-target-disk-required` | 8 | disco ausente/invalido aborta sem eleger substituto |
 | `test-all-vars` | 5 | toda variavel de `vars.sh` atravessa para o chroot |
+| ShellCheck | — | container, repo montado read-only; **pulado** sem `shellcheck`/`podman` |
+
+### A falha permanente do `test-desktop-dryrun` nesta maquina
+
+**O sintoma.** `./tests/run-tests.sh` termina com
+`RESULTADO: 1 grupo(s) de teste com falha`, sempre, nesta maquina:
+
+```
+FAIL  dry-run criou arquivo REAL fora do sandbox: /etc/portage/package.use/desktop-niri
+      estes caminhos existiam antes? se sim, o teste e inconclusivo neste host
+```
+
+**O mecanismo.** A checagem 3 do `tests/test-desktop-dryrun.sh` percorre tres
+caminhos absolutos de producao e reprova se **existirem**:
+
+```sh
+for p in /etc/portage/package.use/desktop-niri /etc/portage/repos.conf/guru.conf \
+         /etc/X11/xorg.conf.d/20-nvidia.conf; do
+    [[ -e "$p" ]] && vazou="$vazou $p"
+done
+```
+
+Nao ha snapshot antes/depois. E um **teste de existencia**, nao de vazamento.
+Numa maquina que ja rodou o modulo `desktop/` de verdade — que e exatamente esta
+— os arquivos existem por direito, criados pela instalacao real de 2026-09-02,
+e a asercao dispara independentemente do que o dry-run fez.
+
+**O risco, e ele nao e o falso positivo.** O falso positivo e barulho conhecido.
+O problema serio e o **falso negativo** que a mesma linha de codigo produz:
+
+- Num host onde o arquivo **ja existe**, um dry-run que de fato escrevesse em
+  `/etc/portage/package.use/desktop-niri` produziria **exatamente a mesma saida**
+  que a falha conhecida. As duas situacoes sao indistinguiveis. O teste que
+  existe para provar que o dry-run nao escreve em producao **para de provar
+  isso** justamente nas maquinas onde escrever seria pior — as que ja tem uma
+  instalacao real em cima.
+- Como a falha e permanente, o operador aprende a ignora-la. Um vazamento de
+  verdade chega disfarcado de ruido ja normalizado.
+- E o runner termina com codigo de falha **sempre**, entao "a suite fechou
+  verde" deixa de ser um sinal utilizavel aqui. Qualquer regressao NOVA em outro
+  grupo continua visivel na linha `FAIL` dela, mas o veredicto global nao serve
+  mais para nada nesta maquina.
+
+**Onde a checagem ainda funciona:** num host limpo, que nunca rodou o modulo. La
+os tres caminhos nao existem, e um dry-run que os criasse seria pego. Foi o
+cenario em que ela foi escrita.
+
+**A correcao, quando alguem for fecha-la:** trocar a existencia por comparacao
+antes/depois, como a checagem 1 ja faz com o sandbox — registrar existencia,
+mtime e hash dos tres caminhos antes de rodar os scripts, e reprovar so se algo
+**mudar**. Isso elimina o falso positivo e restaura a deteccao de vazamento nos
+dois tipos de host. **Nao foi feito nesta rodada** — a falha esta documentada,
+nao corrigida.
 
 ### Por que a suite nao substitui a execucao
 
@@ -1317,5 +1444,5 @@ completo com boot. O ext4 continua com dois.
 
 | | |
 |---|---|
-| Base | **Alta** — tres ciclos QEMU + boot e um bare metal + boot, 596 asercoes. Nenhuma execucao limpa com o codigo atual |
+| Base | **Alta** — tres ciclos QEMU + boot e um bare metal + boot, 659 asercoes. Nenhuma execucao limpa com o codigo atual |
 | Desktop | **Baixa, inalterada** — nunca executado. Esta rodada melhorou consistencia e cobertura de teste; nao substitui execucao |
