@@ -488,7 +488,7 @@ do_grub_cfg() {
         if (( outras > 0 )); then
             log_info "os-prober: $outras entrada(s) de outros sistemas no menu"
         else
-            log_warn "os-prober ligado mas nenhum outro sistema entrou no menu. Se voce TEM outro SO instalado, rode 'grub-mkconfig -o /boot/grub/grub.cfg' de novo depois de bootar — dentro do chroot o os-prober nem sempre consegue inspecionar os outros discos"
+            log_warn "os-prober ligado mas nenhum outro sistema entrou no menu. Se voce TEM outro SO instalado, rode 'grub-mkconfig -o /boot/grub/grub.cfg' de novo depois de bootar — dentro do chroot o os-prober nem sempre consegue inspecionar os outros discos. Se persistir com o sistema bootado, NAO e o chroot: o os-prober pode achar o SO e ainda assim nao gerar menuentry (Fedora/BLS em btrfs e o caso conhecido). Ver docs/ARMADILHAS.md secao 18.1, e o chainloader da 18.2"
         fi
     fi
 }

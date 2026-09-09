@@ -997,17 +997,94 @@ Ele depende de `/dev`, `/proc` e `/sys` (que o `install.sh` rbinda) e de
 conseguir montar temporariamente as particoes alheias. Quando nao consegue, o
 resultado e indistinguivel de "nao ha outro SO": menu sem as entradas, sem erro.
 Por isso a etapa 05 **avisa** em vez de falhar — zero outros sistemas e um
-resultado legitimo numa maquina com um SO so. Se voce **tem** outro sistema e
-ele nao apareceu, regenere ja com o Gentoo bootado:
+resultado legitimo numa maquina com um SO so.
 
-```sh
-grub-mkconfig -o /boot/grub/grub.cfg
+Regenerar com o sistema ja bootado (`grub-mkconfig -o /boot/grub/grub.cfg`)
+resolve **se** a causa era o chroot. Nao resolve as duas de baixo, que sao
+estruturais.
+
+### 18.1 Ele acha o outro sistema e mesmo assim nao gera menuentry
+
+Verificado nesta maquina em 2026-09-09, contra um Fedora 44 no `nvme1n1`. O
+`os-prober` responde certo:
+
+```
+$ sudo os-prober
+/dev/nvme1n1p3:Fedora Linux 44 (Workstation Edition):Fedora:linux:btrfs:UUID=9eeff356-...:subvol=root
 ```
 
-**O os-prober monta as particoes dos outros sistemas somente-leitura.** Ele nao
-escreve neles e nao mexe na ESP deles. Se o outro sistema tem ESP propria (o
-caso comum em dual-boot com dois discos), ela continua intocada: o menuentry
-gerado e um `chainloader` para o bootloader dele, no disco dele.
+E o `grub.cfg` gerado logo depois **nao tem uma unica linha `chainloader`**, nem
+menuentry do Fedora. Sem erro, sem aviso. Sao dois becos independentes no
+`sys-boot/os-prober-1.82`, e o Fedora cai nos dois:
+
+**Beco 1 — o caminho `linux`.** O tipo reportado e `linux` + `btrfs`, entao o
+`30_os-prober` chama `linux-boot-prober btrfs UUID=... subvol=...`. Esse caminho,
+em `/usr/bin/linux-boot-prober`, roda **um unico probe**:
+
+```sh
+test="/usr/lib/linux-boot-probes/mounted/40grub2"
+if [ -f $test ] && [ -x $test ]; then
+```
+
+Nao ha laco sobre `/usr/lib/linux-boot-probes/mounted/*` — o `90fallback`, que
+procuraria `/boot/vmlinuz*` direto, **nunca e alcancado numa raiz btrfs**. E o
+`40grub2` parseia `/boot/grub2/grub.cfg` procurando linhas `linux`; o Fedora usa
+**BLS**, onde esse arquivo e um stub com `blscfg` e as entradas reais vivem em
+`/boot/loader/entries/*.conf`. Saida vazia, `exit 0`. No `30_os-prober` a
+variavel `LINUXPROBED` fica vazia, o `for` nao itera nenhuma vez, e nada e
+emitido.
+
+**Beco 2 — o caminho `efi`.** O `05efi` produziria o `chainloader` para o
+`\EFI\fedora\shimx64.efi`, mas ele itera sobre
+`/usr/lib/os-probes/mounted/efi/`, que contem **so** `10elilo` e `20microsoft`.
+Nao ha probe de shim nem de GRUB: o bootloader do Fedora e invisivel para ele.
+
+Nao e configuracao. E limitacao do os-prober contra o layout BLS, e nenhuma
+combinacao de USE flag ou variavel do GRUB muda isso.
+
+### 18.2 O que funciona: chainloader a mao
+
+Independe do os-prober e sobrevive a atualizacao de kernel do outro sistema,
+porque entrega o boot ao bootloader dele, que sabe ler as proprias entradas.
+Pegue o UUID da ESP do outro sistema:
+
+```sh
+sudo blkid -s UUID -o value /dev/nvme1n1p1
+```
+
+E escreva em `/etc/grub.d/40_custom` (o arquivo ja existe e e executavel; nao
+apague o cabecalho `exec tail -n +3 $0` dele):
+
+```sh
+menuentry 'Fedora Linux 44 (nvme1n1)' --class fedora --class gnu-linux --class os {
+    insmod part_gpt
+    insmod fat
+    insmod chain
+    search --no-floppy --fs-uuid --set=root 5175-4DAA
+    chainloader /EFI/fedora/shimx64.efi
+}
+```
+
+Depois `grub-mkconfig -o /boot/grub/grub.cfg`. O `40_custom` e copiado
+literalmente para o `grub.cfg`, entao a entrada sobrevive a toda regeneracao.
+
+**ATENCAO ao regenerar com `OS_PROBER=yes` e outro sistema em btrfs:** o
+os-prober monta a raiz dele em **leitura-escrita**. Ver 18.3.
+
+### 18.3 O os-prober NAO monta tudo somente-leitura
+
+Depende do filesystem, e a diferenca importa se o outro sistema e o seu plano de
+recuperacao:
+
+- **Nao-btrfs:** vai por `grub-mount` (FUSE), que e somente-leitura. Seguro.
+- **btrfs:** `50mounted-tests` (linhas 109 e 149) e `linux-boot-prober` (linha
+  70) usam `mount -t btrfs ...` **sem `-o ro`**. A raiz do outro sistema e
+  montada em leitura-escrita durante o `grub-mkconfig`.
+
+Nada escreve nela de proposito, mas o filesystem e montado rw e o journal do
+btrfs pode ser tocado no mount. Se o outro sistema for o seu fallback de
+recuperacao, saiba disso antes de rodar `grub-mkconfig` com o os-prober ligado —
+e prefira o chainloader da 18.2, que nao monta nada.
 
 **Por que o `probe_grub_cfg` nao reprova as entradas dos outros sistemas.** O
 `grub_cfg_root_ok` exige que toda linha `linux` tenha exatamente um `root=` e

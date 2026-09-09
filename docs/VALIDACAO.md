@@ -1033,6 +1033,38 @@ liga/desliga as tres de uma vez.
 | O os-prober nao enxergar os outros discos **dentro do chroot** | Depende de `/dev`, `/proc`, `/sys` rbindados e de conseguir montar particoes alheias em runtime. Por isso a etapa **avisa** em vez de falhar: zero outros sistemas e resultado legitimo |
 | A forma exata do menuentry gerado (`chainloader` vs `linux`) | E funcao do outro SO e do disco dele. O filtro do `grub_cfg_root_ok` foi escrito para os dois casos, mas so o primeiro `grub-mkconfig` real prova |
 
+### O que a execucao mostrou depois: as tres pecas nao bastam
+
+Executado em 2026-09-09, no sistema bootado, com as tres pecas ja presentes
+(`os-prober-1.82`, `grub-2.14-r5[mount]`, `GRUB_DISABLE_OS_PROBER=false`) e o
+`grub.cfg` regenerado:
+
+```
+$ sudo os-prober
+/dev/nvme1n1p3:Fedora Linux 44 (Workstation Edition):Fedora:linux:btrfs:UUID=9eeff356-...:subvol=root
+$ sudo grep -nE '^\s*(menuentry|linux|chainloader)' /boot/grub/grub.cfg
+... quatro linhas `linux`, todas do nosso kernel, nenhum chainloader,
+    ultimo menuentry = 'UEFI Firmware Settings'
+```
+
+O os-prober **acha** o Fedora e o `grub.cfg` **nao** ganha entrada nenhuma. Sem
+erro, sem aviso. A causa esta em dois becos independentes do os-prober 1.82,
+lidos no codigo instalado e detalhados em ARMADILHAS 18.1: o caminho `linux`
+roda so o `40grub2`, que nao entende o layout BLS do Fedora (e o `90fallback`
+nunca e alcancado numa raiz btrfs); e o caminho `efi` so tem probe de elilo e
+Microsoft, entao o `shimx64.efi` do Fedora e invisivel.
+
+**Consequencia honesta para este repositorio:** o commit do os-prober e correto
+e e pre-requisito — sem `grub[mount]` o emerge nem completa, e o `grub-mount` e
+usado de verdade pelos probes — mas **nao entrega dual-boot com Fedora**. O que
+funciona e o chainloader manual da secao 18.2, que nao depende do os-prober.
+Isso nao foi automatizado: continua sendo passo manual, documentado.
+
+Registrado tambem que o os-prober **nao** monta tudo somente-leitura, ao
+contrario do que a primeira versao da secao 18 afirmava: em raiz btrfs o
+`50mounted-tests` e o `linux-boot-prober` usam `mount -t btrfs` sem `-o ro`.
+Importa porque o outro sistema desta maquina e o fallback de recuperacao.
+
 **Divergencias entre o repo e esta maquina, registradas sem serem alteradas:**
 o autounmask ja tinha gravado `>=sys-boot/grub-2.14-r5 mount` dentro de
 `/etc/portage/package.use/steam`; `sys-boot/os-prober` ja esta no `world`; e o
