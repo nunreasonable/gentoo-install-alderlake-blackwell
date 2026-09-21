@@ -257,6 +257,35 @@ check_fail() {
     log_error "  [FALHA] $1"
 }
 
+# _use_ativa <atom> <flag>: a flag foi mesmo LIGADA no pacote instalado?
+#
+# Pergunta COMPLEMENTAR a do have_use_flag, e a diferenca e o ponto todo desta
+# funcao. O have_use_flag pergunta se a flag EXISTE no IUSE do ebuild, que e o
+# que interessa ANTES de escrever em package.use — e o que as etapas 10 e 16
+# fazem. Aqui a pergunta so faz sentido DEPOIS do emerge: o pacote foi
+# construido com ela.
+#
+# As duas divergem exatamente no caso que morde: package.use escrito certo,
+# emerge daquele atom nunca refeito, binario antigo sem a flag. O package.use so
+# passa a valer no proximo emerge do pacote, e nada na etapa 16 forca isso.
+#
+# O VDB guarda a USE efetiva de build em /var/db/pkg/<cpv>/USE. O portageq match
+# resolve o SLOT: dev-qt/qtbase e multi-slot, e casar por diretorio pegaria o
+# slot errado em silencio — o mesmo erro que o have_use_flag ja documenta por
+# ter acontecido no bare metal com o dev-cpp/gtkmm.
+#
+# Saidas: 0 ligada, 1 desligada, 2 indeterminado (nao instalado, ou sem VDB).
+_use_ativa() {
+    local atom="$1" flag="$2" cpv f
+    cpv="$(portageq match / "$atom" 2>/dev/null | head -1)" || return 2
+    [[ -n "$cpv" ]] || return 2
+    [[ -r "/var/db/pkg/$cpv/USE" ]] || return 2
+    for f in $(< "/var/db/pkg/$cpv/USE"); do
+        [[ "$f" == "$flag" ]] && return 0
+    done
+    return 1
+}
+
 # _secao <titulo>: cabecalho de bloco, para o relatorio nao virar uma parede de
 # linhas indistinguiveis.
 _secao() {
@@ -912,6 +941,48 @@ do_check_session_files() {
                 check_fail "modulos QML do Clavis com biblioteca ausente:$libs_faltando" "O Clavis e compilado FORA do Portage, entao um upgrade de Qt nao o reconstroi. Recompile: ./desktop/install-desktop.sh --only 16 (apague antes o marker: rm $(state_dir)/16-clavis-build)"
             else
                 check_ok "modulos QML do Clavis com todas as bibliotecas resolvidas (ldd)"
+            fi
+
+            # --- as USE da etapa 16 foram mesmo CONSTRUIDAS? ---
+            #
+            # Cada par desta lista custou um emerge parado no Ciclo 6. A 16
+            # escreve o package.use e valida contra o IUSE, mas isso prova que a
+            # flag EXISTE no ebuild, nao que o pacote foi reconstruido com ela.
+            # Quem ja tinha o qtbase instalado sem vulkan segue com o binario
+            # antigo ate o proximo emerge daquele atom, e a etapa 16 nao forca.
+            #
+            # O sintoma nao menciona USE em lugar nenhum: a compilacao do Clavis
+            # quebra com cabecalho ou simbolo ausente, ou pior, linka e o modulo
+            # QML falha em runtime. Mesmo espirito da checagem de ldd acima — o
+            # gerente de pacotes nao vai avisar.
+            #
+            # So flags positivas. As negativas da 16 (qttools[-widgets,
+            # -assistant]) sao economia de dependencia, nao requisito: se
+            # estiverem ligadas o Clavis compila igual, e reprovar por isso
+            # seria ruido.
+            local use_faltando="" use_indet="" par atom flag
+            for par in \
+                "dev-qt/qtbase:6 dbus"          "dev-qt/qtbase:6 vulkan" \
+                "dev-qt/qtbase:6 opengl"        "dev-qt/qtbase:6 wayland" \
+                "dev-qt/qtdeclarative:6 vulkan" "dev-qt/qtdeclarative:6 opengl" \
+                "dev-qt/qttools:6 linguist"     "dev-qt/qt5compat:6 qml" \
+                "media-sound/libcava pipewire"  "dev-cpp/cpptrace unwind" \
+                "x11-libs/libxkbcommon X"       "net-misc/networkmanager iwd" \
+                "app-misc/brightnessctl udev"
+            do
+                atom="${par%% *}"; flag="${par##* }"
+                _use_ativa "$atom" "$flag"
+                case $? in
+                    1) use_faltando="$use_faltando ${atom}[${flag}]" ;;
+                    2) use_indet="$use_indet ${atom}[${flag}]" ;;
+                esac
+            done
+            if [[ -n "$use_faltando" ]]; then
+                check_fail "pacotes construidos SEM as USE que a etapa 16 exige:$use_faltando" "O package.use da etapa 16 esta escrito, mas estes pacotes nao foram reconstruidos depois — package.use so vale no proximo emerge do atom. Rode: emerge --newuse --deep @world (ou apenas nos atoms acima). Confira um caso com: portageq match / <atom> e depois cat /var/db/pkg/<cpv>/USE"
+            elif [[ -n "$use_indet" ]]; then
+                check_warn "nao foi possivel conferir a USE de:$use_indet" "Normal se o pacote ainda nao esta instalado — o networkmanager, por exemplo, so entra junto com o quickshell. Se ja estiver instalado, confira com: portageq match / <atom>"
+            else
+                check_ok "pacotes da etapa 16 construidos com todas as USE exigidas"
             fi
         else
             # AVISO e nao FALHA, e a distincao importa: a 15 roda ANTES da 16 no
