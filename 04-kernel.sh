@@ -419,8 +419,9 @@ migrate_kernel_sentinel() {
 probe_kernel_build() {
     local kver frag
     kver="$(kernel_release)" || return 1
-    # vmlinuz instalado pelo `make install` para a versao corrente das fontes
-    compgen -G "/boot/vmlinuz-${kver}*" > /dev/null || return 1
+    # vmlinuz instalado pelo `make install` para a versao corrente das fontes;
+    # um backup .old nao substitui a imagem exata dessa versao.
+    [[ -f "/boot/vmlinuz-${kver}" ]] || return 1
     # modulos instalados
     [[ -d "/lib/modules/${kver}" ]] || return 1
     # hash do fragmento: editar o fragmento muda o hash, invalida e forca o

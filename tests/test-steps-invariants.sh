@@ -270,6 +270,51 @@ else
     no "01-stage3 nao deriva o flavor do stage3 de INIT_SYSTEM"
 fi
 
+# --- o probe do kernel nao pode aceitar apenas o backup .old ---------------
+# Exercita a funcao extraida com os caminhos absolutos redirecionados para um
+# sandbox. Modulos e marker atual estao presentes nos dois casos: o unico
+# artefato que muda e a existencia do vmlinuz exato.
+printf '\n  -- probe do kernel exige o vmlinuz exato --\n'
+
+probe_kernel_fn="$(extract_fn "$KERNEL_SH" probe_kernel_build)"
+if [[ -z "$probe_kernel_fn" ]]; then
+    no "04-kernel nao define probe_kernel_build"
+else
+    kprobe_tmp="$(mktemp -d)"
+    kprobe_kver=6.18.48-gentoo
+    probe_kernel_fn="${probe_kernel_fn//\/boot\/vmlinuz-/${kprobe_tmp}/boot/vmlinuz-}"
+    probe_kernel_fn="${probe_kernel_fn//\/lib\/modules/${kprobe_tmp}/lib/modules}"
+    mkdir -p "$kprobe_tmp/boot" "$kprobe_tmp/lib/modules/$kprobe_kver"
+
+    run_kernel_probe() {
+        (
+            eval "$probe_kernel_fn"
+            kernel_release() { printf '%s\n' "$kprobe_kver"; }
+            fragment_hash() { printf '%s\n' 'hash-atual'; }
+            step_value() { printf '%s\n' 'hash-atual'; }
+            kernel_sentinel() { printf '%s\n' "$kprobe_tmp/sentinela"; }
+            FRAGMENT_FILE="$REPO_DIR/kernel-fragment.config"
+            probe_kernel_build
+        )
+    }
+
+    printf 'backup\n' > "$kprobe_tmp/boot/vmlinuz-${kprobe_kver}.old"
+    if run_kernel_probe; then
+        no "probe_kernel_build aceita apenas vmlinuz-${kprobe_kver}.old" \
+           "backup, modulos e marker atual nao substituem a imagem exata"
+    else
+        ok "probe_kernel_build reprova backup .old sem o vmlinuz exato"
+    fi
+
+    printf 'kernel atual\n' > "$kprobe_tmp/boot/vmlinuz-${kprobe_kver}"
+    if run_kernel_probe; then
+        ok "probe_kernel_build aceita vmlinuz exato com modulos e marker atual"
+    else
+        no "probe_kernel_build reprova o vmlinuz exato"
+    fi
+    rm -rf "$kprobe_tmp"
+fi
+
 # --- a sentinela de resume nao pode virar entrada de boot -------------------
 # Regressao de 2026-09-02 (Ciclo 3): o grub-mkconfig imprimiu
 #   Found linux image: /boot/kernel-fragment.sha256-6.18.48-gentoo
